@@ -68,3 +68,12 @@ def test_ledger_capture_and_refund(tmp_path):
     led.record_refund("CAP1", {"amount": {"value": "6.00"}})
     p = led.list_payments()[0]
     assert p["status"] == "REFUNDED" and p["refunded"] == 10.0 and p["country"] == "FR"
+
+
+def test_reporting_scope_detection(client):
+    assert not client.can_search_transactions()
+    client.session.post.return_value = _resp(200, {
+        "access_token": "tok2", "expires_in": 3600,
+        "scope": "openid https://uri.paypal.com/services/reporting/search/read"})
+    client.get_access_token(force=True)
+    assert client.can_search_transactions()

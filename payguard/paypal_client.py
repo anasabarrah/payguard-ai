@@ -14,6 +14,7 @@ import requests
 from dotenv import load_dotenv
 
 SANDBOX_URL = "https://api-m.sandbox.paypal.com"
+REPORTING_SCOPE = "https://uri.paypal.com/services/reporting/search/read"
 
 
 class PayPalError(RuntimeError):
@@ -35,6 +36,7 @@ class PayPalClient:
         self.timeout = timeout
         self._token: str | None = None
         self._token_expiry = 0.0
+        self.scopes: set[str] = set()
         self.session = requests.Session()
 
     # --- auth -------------------------------------------------------------
@@ -52,6 +54,7 @@ class PayPalClient:
             raise PayPalError(resp.status_code, _body(resp))
         data = resp.json()
         self._token = data["access_token"]
+        self.scopes = set(data.get("scope", "").split())
         self._token_expiry = time.time() + int(data.get("expires_in", 0))
         return self._token
 
@@ -106,6 +109,11 @@ class PayPalClient:
                              idempotent=True, headers={"Prefer": "return=representation"})
 
     # --- reporting --------------------------------------------------------
+    def can_search_transactions(self) -> bool:
+        """True once 'Transaction search' is enabled for the app and reflected in the token."""
+        self.get_access_token()
+        return REPORTING_SCOPE in self.scopes
+
     def list_transactions(self, start: datetime | None = None, end: datetime | None = None,
                           page_size: int = 100) -> list[dict]:
         """Transaction Search API (v1). Note: sandbox data can lag by up to a few hours."""

@@ -59,11 +59,17 @@ def main() -> int:
 
     print(f"[ok] ledger holds {len(ledger.list_payments())} payment(s)")
 
+    client.get_access_token(force=True)
+    if not client.can_search_transactions():
+        print("[warn] token lacks the reporting scope; enable 'Transaction search' for the sandbox"
+              " app in the PayPal developer dashboard. Using the local ledger instead.")
+        return 0
     try:
-        print(f"[ok] transaction search returned {len(client.list_transactions())} rows")
+        rows = client.list_transactions()
+        print(f"[ok] transaction search returned {len(rows)} rows"
+              + (" (sandbox data can lag by hours)" if not rows else ""))
     except PayPalError as e:
-        print(f"[warn] transaction search unavailable ({e.status}); enable 'Transaction search'"
-              " for the app in the PayPal developer dashboard. Using the local ledger instead.")
+        print(f"[warn] transaction search failed ({e.status}); using the local ledger instead.")
     return 0
 
 
