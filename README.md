@@ -19,8 +19,9 @@ Requires Python 3.10+.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # then fill in the values
+pip install -r requirements.txt        # the app
+pip install -r requirements-dev.txt    # optional: tests and retraining
+cp .env.example .env                   # then fill in the values
 ```
 
 | Variable | Required | Purpose |
@@ -49,6 +50,28 @@ whenever it runs. `tests/test_demo_levels.py` checks that the 8 demo payments
 come out as 4 low, 2 medium and 2 high at 03:00, 12:00 and 22:00 UTC, on an
 empty ledger and after several earlier demos. Over 200 random demo runs, low
 scores stay at or below 82.6, medium at 97.7–98.3 and high at 99.9 or above.
+
+## Deploy on Render (free)
+
+The repo contains a `Dockerfile` (Python 3.11 slim + `libgomp1` for LightGBM)
+and a `render.yaml` Blueprint for a free web service.
+
+1. In Render, choose **New → Blueprint** and connect this GitHub repository.
+2. Render reads `render.yaml` and asks for the secret values:
+   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `GROQ_API_KEY` (optional).
+   `GROQ_MODEL` is preset.
+3. Deploy. The app is served on the `onrender.com` URL Render gives you; the
+   health check is `/_stcore/health`.
+
+Behaviour on the free plan:
+- The service sleeps after ~15 minutes without traffic; the next visit takes
+  about a minute to wake it.
+- The disk is ephemeral: the ledger (`data/ledger.db`) starts empty after each
+  deploy or restart. Click **⚡ Simulate payments** to create demo payments.
+- All visitors share one ledger, and anyone with the URL can trigger sandbox
+  refunds. Only use sandbox credentials.
+
+The app uses about 190 MB of RAM, within the free plan's 512 MB.
 
 ## Tests
 

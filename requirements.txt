@@ -1,9 +1,7 @@
+# Runtime: what the Streamlit app needs (used by the Docker image / Render).
 requests>=2.31
 python-dotenv>=1.0
 numpy>=1.26
 pandas>=2.1
-pyarrow>=14.0
-scikit-learn>=1.4
 lightgbm>=4.3
 streamlit>=1.50
-pytest>=8.0
