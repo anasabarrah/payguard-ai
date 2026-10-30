@@ -6,6 +6,7 @@ hours in sandbox, so the app keeps its own record of every PayPal call.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,8 +49,8 @@ EXTRA_COLUMNS = {
 
 
 class Ledger:
-    def __init__(self, path: str | Path = DEFAULT_DB):
-        self.path = Path(path)
+    def __init__(self, path: str | Path | None = None):
+        self.path = Path(path or os.getenv("PAYGUARD_DB") or DEFAULT_DB)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row

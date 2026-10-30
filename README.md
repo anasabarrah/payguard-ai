@@ -1,10 +1,16 @@
 # PayGuard AI
 
-AI agent that detects fraud in PayPal payments and explains every alert.
-Built for the PayPal AI Hackathon.
+AI agent that reviews a seller's PayPal payments for fraud, explains every
+alert in plain English, and proposes an action. The seller confirms before
+anything happens on PayPal. Built for the PayPal AI Hackathon.
 
-> Work in progress: PayPal sandbox integration and the risk model are done;
-> explanations, the agent and the Streamlit UI are coming next.
+- **Risk score 0–100** for every payment (LightGBM)
+- **Top 3 reasons** per alert (SHAP), plus **one plain-English sentence** written
+  by an LLM on Groq, with every number checked against those reasons
+- **Agent proposal**: approve, monitor or refund. Refunds go through the
+  PayPal REST API only after the seller confirms.
+- **Streamlit dashboard** with a one-click demo that creates real PayPal sandbox
+  payments, some of them suspicious
 
 ## Installation
 
@@ -14,22 +20,107 @@ Requires Python 3.10+.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then fill in your PayPal sandbox credentials
+cp .env.example .env   # then fill in the values
 ```
 
-`.env` holds `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` (from a **sandbox**
-app in the PayPal developer dashboard). It is listed in `.gitignore` and is
-never committed.
+| Variable | Required | Purpose |
+|---|---|---|
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | yes | a **sandbox** app from the PayPal developer dashboard |
+| `GROQ_API_KEY` | no | plain-English explanations (free key at console.groq.com); without it a template sentence is used |
+| `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
 
-## Quick checks
+`.env` is listed in `.gitignore` and is never committed.
+
+## Run
 
 ```bash
-pytest -q                               # offline unit tests
+streamlit run app.py
+```
+
+Open http://localhost:8501 and click **⚡ Simulate payments** in the sidebar.
+It creates 8 real sandbox card payments: 4 from regular buyers, then 4
+suspicious ones (new foreign buyers, unusually large orders). Pick a payment
+in the table to see its score, reasons and explanation, then click
+**Approve**, **Monitor** or **Refund**. A refund asks for confirmation, then
+calls PayPal.
+
+Note: the hour of day weighs heavily in the model (see limitations), so during
+night hours UTC almost every payment scores high. The demo reads best in daytime UTC.
+
+## Tests
+
+```bash
+pytest -q                               # offline: client, model, explanations, agent, UI
 python scripts/paypal_smoke_test.py     # live sandbox: auth, order, capture, refund
 ```
 
-The smoke test pays with a PayPal sandbox test card, so the order is captured
-without a buyer approving it in a browser.
+The UI tests drive `app.py` headlessly with Streamlit's `AppTest`, using mocked
+PayPal and Groq clients. They check, for example, that a refund never reaches
+PayPal before the seller confirms.
+
+## Architecture
+
+```
+            PayPal sandbox (REST v2: orders, captures, refunds)
+                 ▲                                   │
+     refund only │                                   │ create / capture
+   after confirm │                                   ▼
+┌──────────────────────────┐    ┌─────────────────────────────────────┐
+│ app.py (Streamlit)       │    │ payguard/ledger.py  SQLite ledger    │
+│ list · detail · buttons  │◄──►│ payments, decisions, cached sentences│
+└────────────┬─────────────┘    └─────────────────────────────────────┘
+             │
+┌────────────▼─────────────┐  features   ┌──────────────────────────┐
+│ payguard/agent.py        │────────────►│ payguard/risk.py         │
+│ review → propose →       │             │ LightGBM → 0-100 score   │
+│ execute(seller_confirmed)│◄────────────│ models/ (shipped)        │
+└────────────┬─────────────┘   score     └──────────────────────────┘
+             │ reasons
+┌────────────▼─────────────┐
+│ payguard/explain.py      │  TreeSHAP top 3 → Groq sentence
+│                          │  → number check → template fallback
+└──────────────────────────┘
+```
+
+| Module | Role |
+|---|---|
+| `payguard/paypal_client.py` | OAuth, create/capture orders, refunds, Transaction Search |
+| `payguard/ledger.py` | local record of payments, decisions (audit log) and explanations |
+| `payguard/features.py` | features shared by training (PaySim) and inference (ledger) |
+| `payguard/risk.py` | loads the model, turns probabilities into 0–100 scores and levels |
+| `payguard/explain.py` | SHAP reasons, Groq sentence, number check, template |
+| `payguard/agent.py` | proposes an action per level; executes only on seller confirmation |
+| `payguard/simulate.py` | creates the demo sandbox payments |
+| `scripts/` | dataset download, training, PayPal smoke test |
+
+## Explanations
+
+SHAP values come from LightGBM's built-in TreeSHAP (`pred_contrib=True`), which
+is exact for tree models and needs no extra dependency. The 3 reasons are the
+features that pushed the score up the most; for a low-risk payment, the
+remaining slots go to the features that pulled it down.
+
+The LLM receives only the score and the 3 reasons as text, and is asked to
+copy numbers exactly. Before a sentence is shown, every number in it, whether
+written in digits ("22.5") or in words ("twenty"), must appear in those
+facts. If not, PayGuard retries once and then falls back to a fill-in-the-blanks
+template, which is also used with no `GROQ_API_KEY` or on any API error. The UI
+labels which of the two produced the sentence.
+
+## Agent and seller validation
+
+| Risk level | Score | Proposal |
+|---|---|---|
+| low | < 95 | Approve |
+| medium | 95 – 99.1 | Monitor (hold or watch before shipping) |
+| high | ≥ 99.1 | Refund |
+
+The agent only proposes. `PayGuardAgent.execute()` refuses to act without
+`seller_confirmed=True`. In the UI, Approve and Monitor are recorded locally;
+Refund opens a confirmation dialog and then refunds the remaining amount
+through PayPal. The seller can always pick a different action than the
+proposal. A refunded payment cannot be changed. Every decision is logged with
+the score, the proposal and the PayPal refund id.
 
 ## Risk model
 
@@ -118,6 +209,13 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   "Transaction search" option on the app, and sandbox data can lag by hours.
   PayGuard therefore keeps a local SQLite ledger (`data/ledger.db`) of every
   order, capture and refund it makes, and uses that as the primary source.
+- **Demo buyer profiles.** Card payments in the sandbox carry no payer email,
+  and PayPal does not return the card's billing country. For simulated
+  payments, the payer email and country shown in the app come from the demo
+  buyer profile used to create the payment, which is also the card's billing
+  country.
+- **LLM sentences** can still be awkward or vague. The number check only
+  guarantees that they contain no number absent from the model's reasons.
 
 This is a hackathon prototype trained on synthetic data. It is not a production
 fraud model.
