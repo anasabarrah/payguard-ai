@@ -445,7 +445,7 @@ with right:
             f'<div class="pg-ring-cap">risk score</div></div></div>',
             unsafe_allow_html=True)
 
-        st.markdown('<div class="pg-section">Why PayGuard flagged it</div>',
+        st.markdown('<div class="pg-section">Why this score</div>',
                     unsafe_allow_html=True)
         with st.spinner("Writing explanation…"):
             exp = agent.explain(alert)

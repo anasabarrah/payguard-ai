@@ -43,6 +43,8 @@ def test_renders_and_defaults_to_riskiest(app):
     assert not app.exception
     assert "$900.00" in " ".join(m.value for m in app.markdown)
     assert any("Template explanation" in c.value for c in app.caption)
+    text = " ".join(m.value for m in app.markdown)
+    assert "Why this score" in text and "flagged it" not in text
     labels = [b.label for b in app.button]
     assert {"✅ Approve", "👁️ Monitor", "↩️ Refund", "⚡ Simulate payments"} <= set(labels)
     shop = [b for b in app.get("link_button") if "Open demo shop" in b.proto.label]
