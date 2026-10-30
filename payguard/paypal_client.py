@@ -24,6 +24,15 @@ class PayPalError(RuntimeError):
         self.status = status
         self.body = body
 
+    @property
+    def short(self) -> str:
+        """One readable line, e.g. 'REFUND_FAILED_INSUFFICIENT_FUNDS: Capture could not be ...'."""
+        body = self.body if isinstance(self.body, dict) else {}
+        detail = (body.get("details") or [{}])[0]
+        issue = detail.get("issue") or body.get("name") or f"HTTP {self.status}"
+        text = detail.get("description") or body.get("message") or body.get("error_description") or ""
+        return f"{issue}: {text}" if text else issue
+
 
 class PayPalClient:
     def __init__(self, client_id: str | None = None, client_secret: str | None = None,

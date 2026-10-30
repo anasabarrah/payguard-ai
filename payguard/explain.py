@@ -116,10 +116,6 @@ def template_sentence(score: float, level: str, reasons: list[Reason]) -> str:
 
 
 def llm_sentence(score: float, level: str, reasons: list[Reason], timeout: float = 15.0) -> str | None:
-    load_dotenv()
-    key = os.getenv("GROQ_API_KEY")
-    if not key:
-        return None
     prompt = (
         "You explain fraud alerts to an online seller. Write ONE short sentence in plain "
         "English saying why this payment got its risk score. Use only the "
@@ -127,6 +123,15 @@ def llm_sentence(score: float, level: str, reasons: list[Reason], timeout: float
         "compute or add any other number. No preamble, no quotes.\n\n"
         + _facts(score, level, reasons)
     )
+    return llm_complete(prompt, timeout=timeout)
+
+
+def llm_complete(prompt: str, timeout: float = 15.0, max_tokens: int = 2000) -> str | None:
+    """One Groq chat completion; None without GROQ_API_KEY or on any API error."""
+    load_dotenv()
+    key = os.getenv("GROQ_API_KEY")
+    if not key:
+        return None
     try:
         resp = requests.post(GROQ_URL, timeout=timeout,
                              headers={"Authorization": f"Bearer {key}"},
@@ -134,7 +139,7 @@ def llm_sentence(score: float, level: str, reasons: list[Reason], timeout: float
                                    "messages": [{"role": "user", "content": prompt}],
                                    "temperature": 0.2, "reasoning_effort": "low",
                                    # gpt-oss reasons before answering; leave room for both.
-                                   "max_completion_tokens": 2000})
+                                   "max_completion_tokens": max_tokens})
         resp.raise_for_status()
         text = (resp.json()["choices"][0]["message"].get("content") or "").strip().strip('"')
     except (requests.RequestException, KeyError, IndexError, ValueError):
@@ -148,6 +153,55 @@ def explain(score: float, level: str, reasons: list[Reason], use_llm: bool = Tru
         if text and is_grounded(text, score, reasons):
             return Explanation(score, level, reasons, text, "llm")
     return Explanation(score, level, reasons, template_sentence(score, level, reasons), "template")
+
+
+# --- queue summary ----------------------------------------------------------
+
+QUEUE_VERBS = {"refund": "to refund", "monitor": "to monitor", "accept": "to approve"}
+
+
+def queue_facts(count: dict, total: dict, reasons: dict[str, list[str]] | None = None) -> str:
+    """The plan as plain facts: the only source of numbers for the summary."""
+    lines = [f"Payments waiting for review: {sum(count.values())}"]
+    for act in ("refund", "monitor", "accept"):
+        lines.append(f"- {_plural(count[act])} {QUEUE_VERBS[act]}, ${total[act]:,.2f} in total")
+    lines.append(f"Estimated loss avoided by the refunds: ${total['refund']:,.2f}")
+    flagged = [t for texts in (reasons or {}).values() for t in texts]
+    if flagged:
+        lines.append("Why the flagged payments stand out:")
+        lines += [f"- {t}" for t in dict.fromkeys(flagged)]
+    return "\n".join(lines)
+
+
+def queue_template(count: dict, total: dict) -> str:
+    return (f"{_plural(count['refund'])} to refund, {count['monitor']} to monitor, "
+            f"{count['accept']} to approve. Estimated loss avoided: ${total['refund']:,.2f}.")
+
+
+def queue_summary(count: dict, total: dict, reasons: dict[str, list[str]] | None = None,
+                  use_llm: bool = True) -> tuple[str, str]:
+    """(summary, source). Every number the LLM writes must appear in the facts."""
+    facts = queue_facts(count, total, reasons)
+    if sum(count.values()) == 0:
+        return "No payment is waiting for review.", "template"
+    allowed = numbers_in(facts)
+    prompt = (
+        "You are a fraud-review agent reporting to an online seller. In 2 short sentences of "
+        "plain English, summarise your plan for the payments waiting for review: how many to "
+        "refund, monitor and approve, the estimated loss avoided, and in a few words why the "
+        "flagged payments stand out. Use only the facts below. Copy every number and dollar "
+        "amount exactly as written, using digits; do not round, add up or compute anything. "
+        "Never mention countries or nationalities. No preamble, no lists, no quotes.\n\n" + facts
+    )
+    for _ in range(2 if use_llm else 0):
+        text = llm_complete(prompt, max_tokens=3000)
+        if text and numbers_in(text) <= allowed:
+            return text, "llm"
+    return queue_template(count, total), "template"
+
+
+def _plural(n: int) -> str:
+    return f"{n} payment" + ("" if n == 1 else "s")
 
 
 def _facts(score: float, level: str, reasons: list[Reason]) -> str:

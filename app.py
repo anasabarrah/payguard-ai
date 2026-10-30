@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from payguard.agent import PayGuardAgent
+from payguard.agent import PayGuardAgent, QueuePlan
 from payguard.explain import DEFAULT_GROQ_MODEL
 from payguard.ledger import Ledger
 from payguard.paypal_client import PayPalClient, PayPalError
@@ -137,9 +137,9 @@ with st.sidebar:
         st.warning("No GROQ_API_KEY: explanations use a template", icon="📝")
 
     st.markdown("#### Demo")
-    st.link_button("🛍️ Open demo shop", "/shop/", use_container_width=True,
+    st.link_button("🛍️ Open demo shop", "/shop/", width="stretch",
                    help="Buy with a PayPal sandbox buyer account; the payment appears here")
-    if st.button("⚡ Simulate payments", use_container_width=True, disabled=paypal is None,
+    if st.button("⚡ Simulate payments", width="stretch", disabled=paypal is None,
                  help="Creates 10 real PayPal sandbox payments: 6 ordinary (incl. 2 foreign), 4 unusually large foreign orders"):
         bar = st.progress(0.0, text="Creating sandbox payments…")
         try:
@@ -148,7 +148,7 @@ with st.sidebar:
             st.session_state["selected"] = None
             st.toast(f"{len(ids)} sandbox payments created", icon="✅")
         except PayPalError as e:
-            st.error(f"PayPal error: {e}")
+            st.error(f"PayPal error: {e.short}")
         bar.empty()
 
     st.markdown("#### Filters")
@@ -222,6 +222,112 @@ for col, (label, value) in zip(st.columns(len(kpis)), kpis):
 st.write("")
 
 
+# --- agent: review the whole queue -----------------------------------------------
+
+PLAN_ROWS = [("refund", "↩️ Refund", "high"), ("monitor", "👁️ Monitor", "medium"),
+             ("accept", "✅ Approve", "low")]
+
+
+def close_plan_refunds():
+    st.session_state.pop("plan_refunds", None)
+
+
+@st.dialog("Confirm the agent's refunds", on_dismiss=close_plan_refunds)
+def confirm_plan_refunds(plan: QueuePlan):
+    by_id = {a.capture_id: a for a in alerts}
+    ids = [cid for cid in plan.ids("refund") if cid in by_id and by_id[cid].pending]
+    total = sum(by_id[c].payment["amount"] - by_id[c].payment["refunded"] for c in ids)
+    st.write(f"Refund **{len(ids)}** high-risk payment{'s' if len(ids) != 1 else ''}, "
+             f"**${total:,.2f}** in total, through PayPal?")
+    for cid in ids:
+        a = by_id[cid]
+        st.markdown(f"- **${a.payment['amount']:,.2f}** · "
+                    f"{html.escape(a.payment.get('payer_email') or 'unknown payer')} · "
+                    f"score {a.score:.1f}")
+    st.caption("This sends real refund requests to the PayPal sandbox and cannot be undone. "
+               "Skipped refunds stay in the queue.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, refund them", type="primary", width="stretch"):
+        res = agent.apply_plan(plan, refunds_confirmed=True)
+        refunds = res["done"]["refund"]
+        if refunds:
+            st.session_state["plan_flash"] = (f"{len(refunds)} refund(s) completed on PayPal: "
+                                              + ", ".join(f"`{r}`" for r in refunds))
+        if res["failed"]:
+            st.session_state["plan_flash_error"] = " · ".join(f"capture {c}: {e}"
+                                                              for c, e in res["failed"])
+        st.session_state.pop("queue_plan", None)
+        close_plan_refunds()
+        st.rerun()
+    if c2.button("Not now", width="stretch"):
+        st.session_state["plan_flash"] = "Refunds skipped: those payments stay in the queue."
+        st.session_state.pop("queue_plan", None)
+        close_plan_refunds()
+        st.rerun()
+
+
+with st.container(border=True):
+    head, action = st.columns([2.6, 1], vertical_alignment="center")
+    head.markdown("**🤖 PayGuard agent** <span class='pg-muted'>· reviews every pending payment "
+                  "and proposes a plan. You approve it; refunds need a second confirmation."
+                  "</span>", unsafe_allow_html=True)
+    if action.button("🤖 Let the agent review the queue", type="primary",
+                     width="stretch", disabled=not pending, key="b_review_queue"):
+        plan = agent.plan_queue(alerts)
+        with st.spinner("The agent is reviewing the queue…"):
+            summary, source = agent.summarize(plan)
+        st.session_state["queue_plan"] = (plan, summary, source)
+    if msg := st.session_state.pop("plan_flash", None):
+        st.success(msg, icon="✅")
+    if msg := st.session_state.pop("plan_flash_error", None):
+        st.error(f"Some refunds failed: {msg}", icon="⚠️")
+
+    if stored := st.session_state.get("queue_plan"):
+        plan, summary, source = stored
+        st.markdown(f'<div class="pg-sentence">{html.escape(summary)}</div>',
+                    unsafe_allow_html=True)
+        st.caption(f"✨ Written by {groq_model} on Groq · every number checked against the plan "
+                   "computed by PayGuard" if source == "llm"
+                   else "📝 Template summary (LLM unavailable or not grounded)")
+        cols = st.columns(4)
+        for col, (act, label, lvl) in zip(cols, PLAN_ROWS):
+            col.markdown(
+                f'<div class="pg-card"><div class="pg-kpi-label">{label}</div>'
+                f'<div class="pg-kpi-value" style="color:{LEVELS[lvl]["fg"]}">{plan.count[act]}</div>'
+                f'<div class="pg-muted">${plan.total[act]:,.2f}</div></div>', unsafe_allow_html=True)
+        cols[3].markdown(
+            '<div class="pg-card"><div class="pg-kpi-label">Est. loss avoided</div>'
+            f'<div class="pg-kpi-value">${plan.loss_avoided:,.2f}</div>'
+            '<div class="pg-muted">if the refunds are made</div></div>', unsafe_allow_html=True)
+        if (not st.session_state.get("plan_refunds")
+                and {a.capture_id for a in pending} != {cid for cid, _, _ in plan.items}):
+            st.caption("⚠️ The queue changed since this plan. Only the payments in the plan "
+                       "are affected; ask the agent again to include the others.")
+        st.write("")
+        b1, b2, _ = st.columns([1.3, 1, 2])
+        n_refund = plan.count["refund"]
+        if b1.button("✅ Apply this plan", type="primary", width="stretch",
+                     key="b_apply_plan",
+                     help="Records the approvals and monitors now; refunds ask for confirmation"):
+            res = agent.apply_plan(plan, refunds_confirmed=False)
+            st.session_state["plan_flash"] = (
+                f"Plan applied: {len(res['done']['accept'])} approved, "
+                f"{len(res['done']['monitor'])} monitored."
+                + (f" Confirm the {n_refund} refund(s) in the dialog."
+                   if n_refund and paypal is not None else ""))
+            if n_refund and paypal is not None:
+                st.session_state["plan_refunds"] = True
+            else:
+                st.session_state.pop("queue_plan", None)
+            st.rerun()
+        if b2.button("Discard", width="stretch", key="b_discard_plan"):
+            st.session_state.pop("queue_plan", None)
+            st.rerun()
+        if st.session_state.get("plan_refunds"):
+            confirm_plan_refunds(plan)
+st.write("")
+
+
 # --- payment list ---------------------------------------------------------------
 
 shown = [a for a in alerts if a.level in level_filter and (a.pending or not pending_only)]
@@ -254,7 +360,7 @@ with left:
 
     styled = table.style.map(style_risk, subset=["Risk"]).map(style_status, subset=["Status"])
     event = st.dataframe(
-        styled, hide_index=True, use_container_width=True, height=min(38 + 35 * len(shown), 560),
+        styled, hide_index=True, width="stretch", height=min(38 + 35 * len(shown), 560),
         on_select="rerun", selection_mode="single-row", key="payments_table",
         column_config={
             "Risk": st.column_config.TextColumn("Risk", width=72),
@@ -293,15 +399,17 @@ def confirm_refund(a):
              "through PayPal?")
     st.caption("This sends a real refund request to the PayPal sandbox and cannot be undone.")
     c1, c2 = st.columns(2)
-    if c1.button("Yes, refund", type="primary", use_container_width=True):
+    if c1.button("Yes, refund", type="primary", width="stretch"):
         try:
             res = agent.execute(a, "refund", seller_confirmed=True)
             st.session_state["flash"] = f"Refund {res['refund_id']} completed on PayPal."
-        except (PayPalError, ValueError, RuntimeError) as e:
+        except PayPalError as e:
+            st.session_state["flash_error"] = f"Refund failed: {e.short}"
+        except (ValueError, RuntimeError) as e:
             st.session_state["flash_error"] = f"Refund failed: {e}"
         close_refund_dialog()
         st.rerun()
-    if c2.button("Cancel", use_container_width=True):
+    if c2.button("Cancel", width="stretch"):
         close_refund_dialog()
         st.rerun()
 
@@ -373,17 +481,17 @@ with right:
         refunded = p.get("decision") == "refund"
         b1, b2, b3 = st.columns(3)
         kind = lambda act: "primary" if act == alert.proposed_action else "secondary"  # noqa: E731
-        if b1.button("✅ Approve", type=kind("accept"), use_container_width=True,
+        if b1.button("✅ Approve", type=kind("accept"), width="stretch",
                      disabled=refunded or p.get("decision") == "accept", key="b_accept"):
             agent.execute(alert, "accept", seller_confirmed=True)
             st.session_state["flash"] = "Payment approved."
             st.rerun()
-        if b2.button("👁️ Monitor", type=kind("monitor"), use_container_width=True,
+        if b2.button("👁️ Monitor", type=kind("monitor"), width="stretch",
                      disabled=refunded or p.get("decision") == "monitor", key="b_monitor"):
             agent.execute(alert, "monitor", seller_confirmed=True)
             st.session_state["flash"] = "Payment marked for monitoring."
             st.rerun()
-        if b3.button("↩️ Refund", type=kind("refund"), use_container_width=True,
+        if b3.button("↩️ Refund", type=kind("refund"), width="stretch",
                      disabled=refunded or paypal is None, key="b_refund"):
             st.session_state["refund_for"] = alert.capture_id
         if st.session_state.get("refund_for") == alert.capture_id and not refunded:
@@ -394,8 +502,13 @@ with right:
         if history:
             with st.expander(f"Decision history ({len(history)})"):
                 for h in history:
-                    line = (f"{when(h['decided_at'])} · proposed **{h['proposed_action']}**, "
-                            f"seller chose **{h['chosen_action']}**")
+                    if h.get("source") == "paypal":
+                        line = f"{when(h['decided_at'])} · refunded directly in PayPal"
+                    else:
+                        who = ("seller approved the agent's plan:"
+                               if h.get("source") == "agent_plan" else "seller chose")
+                        line = (f"{when(h['decided_at'])} · proposed **{h['proposed_action']}**, "
+                                f"{who} **{h['chosen_action']}**")
                     if h["refund_id"]:
                         line += f" · PayPal refund `{h['refund_id']}`"
                     st.markdown(line)

@@ -71,6 +71,9 @@ class Ledger:
         for name, kind in EXTRA_COLUMNS.items():
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE payments ADD COLUMN {name} {kind}")
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(decisions)")}
+        if "source" not in cols:  # who decided: seller | agent_plan | paypal
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN source TEXT")
         self.conn.commit()
 
     def record_capture(self, order: dict, payer_id: str | None = None,
@@ -141,7 +144,7 @@ class Ledger:
                     row = self.conn.execute("SELECT decision, refunded, amount FROM payments"
                                             " WHERE capture_id = ?", (capture_id,)).fetchone()
                     if row and row["decision"] is None and row["refunded"] >= row["amount"]:
-                        self._log_decision(capture_id, "refund", None, None, resource["id"])
+                        self._log_decision(capture_id, "refund", None, None, resource["id"], "paypal")
         return True
 
     def record_refund(self, capture_id: str, refund: dict) -> None:
@@ -179,17 +182,18 @@ class Ledger:
         return dict(r) if r else None
 
     def record_decision(self, capture_id: str, action: str, risk_score: float | None = None,
-                        proposed_action: str | None = None, refund_id: str | None = None) -> None:
+                        proposed_action: str | None = None, refund_id: str | None = None,
+                        source: str = "seller") -> None:
         with self.conn:
-            self._log_decision(capture_id, action, risk_score, proposed_action, refund_id)
+            self._log_decision(capture_id, action, risk_score, proposed_action, refund_id, source)
 
     def _log_decision(self, capture_id: str, action: str, risk_score: float | None,
-                      proposed_action: str | None, refund_id: str | None) -> None:
+                      proposed_action: str | None, refund_id: str | None, source: str) -> None:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.conn.execute(
             "INSERT INTO decisions (capture_id, decided_at, risk_score, proposed_action,"
-            " chosen_action, refund_id) VALUES (?,?,?,?,?,?)",
-            (capture_id, now, risk_score, proposed_action, action, refund_id),
+            " chosen_action, refund_id, source) VALUES (?,?,?,?,?,?,?)",
+            (capture_id, now, risk_score, proposed_action, action, refund_id, source),
         )
         self.conn.execute("UPDATE payments SET decision = ?, decided_at = ? WHERE capture_id = ?",
                           (action, now, capture_id))

@@ -97,3 +97,38 @@ def test_webhook_badge_on_verified_payment(app):
     app.run()
     assert not app.exception
     assert any("✓ PayPal webhook" in m.value for m in app.markdown)
+
+
+def test_agent_reviews_queue_and_refunds_only_after_confirmation(app):
+    _clear_caches()
+    app.run()
+    app.button(key="b_review_queue").click().run()
+    assert not app.exception
+    text = " ".join(m.value for m in app.markdown)
+    assert "1 payment to refund, 0 to monitor, 4 to approve" in text
+    assert "Est. loss avoided" in text and "$900.00" in text
+
+    app.button(key="b_apply_plan").click().run()
+    assert not app.exception
+    app.client.refund_capture.assert_not_called()
+    led = Ledger()
+    assert all(led.get(f"CAP{i}")["decision"] == "accept" for i in range(4))
+    assert led.get("CAP9")["decision"] is None
+    yes = next(b for b in app.button if b.label == "Yes, refund them")
+    yes.click().run()
+    assert not app.exception
+    app.client.refund_capture.assert_called_once()
+    assert led.get("CAP9")["decision"] == "refund"
+    assert led.decisions("CAP9")[0]["source"] == "agent_plan"
+    assert any("refund(s) completed on PayPal" in s.value for s in app.success)
+
+
+def test_agent_refunds_can_be_declined(app):
+    _clear_caches()
+    app.run()
+    app.button(key="b_review_queue").click().run()
+    app.button(key="b_apply_plan").click().run()
+    next(b for b in app.button if b.label == "Not now").click().run()
+    assert not app.exception
+    app.client.refund_capture.assert_not_called()
+    assert Ledger().get("CAP9")["decision"] is None

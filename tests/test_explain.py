@@ -85,3 +85,34 @@ def test_top_reasons_match_shap(model):
     assert {r.feature for r in reasons[:2]} == {"amount_ratio", "cross_border"}
     assert any("(payer in AU)" in r.text for r in reasons)
     assert all(r.raises_risk for r in reasons[:2])
+
+
+# --- queue summary (step 3) ----------------------------------------------------
+
+COUNT = {"refund": 2, "monitor": 2, "accept": 6}
+TOTAL = {"refund": 2614.1, "monitor": 461.22, "accept": 270.11}
+
+
+def test_queue_summary_uses_grounded_llm_text(monkeypatch):
+    import payguard.explain as ex
+    text = ("I propose 2 payments to refund, 2 to monitor and 6 to approve, avoiding an "
+            "estimated $2,614.10 loss; the refunds are 27.3x the usual ticket.")
+    monkeypatch.setattr(ex, "llm_complete", lambda *a, **k: text)
+    out, source = ex.queue_summary(COUNT, TOTAL, {"C1": ["The amount is 27.3x the median payment"]})
+    assert (out, source) == (text, "llm")
+
+
+def test_queue_summary_rejects_invented_numbers(monkeypatch):
+    import payguard.explain as ex
+    calls = []
+    monkeypatch.setattr(ex, "llm_complete",
+                        lambda *a, **k: calls.append(1) or "Refund 2 payments to save about $2,600.")
+    out, source = ex.queue_summary(COUNT, TOTAL)
+    assert source == "template" and len(calls) == 2
+    assert out == "2 payments to refund, 2 to monitor, 6 to approve. Estimated loss avoided: $2,614.10."
+
+
+def test_queue_facts_list_every_number():
+    from payguard.explain import numbers_in, queue_facts
+    facts = queue_facts(COUNT, TOTAL)
+    assert {10, 2, 6, 2614.1, 461.22, 270.11} <= numbers_in(facts)

@@ -211,6 +211,32 @@ through PayPal. The seller can always pick a different action than the
 proposal. A refunded payment cannot be changed. Every decision is logged with
 the score, the proposal and the PayPal refund id.
 
+## Agent: review the whole queue
+
+**🤖 Let the agent review the queue** (above the payment list) plans every
+payment still waiting for a decision, for example: *"2 payments to refund, 2
+to monitor, 6 to approve. Estimated loss avoided: $2,645.02."*
+
+- **The code computes every number**: `PayGuardAgent.plan_queue()` takes the
+  proposal of each pending payment (refund / monitor / approve, from its risk
+  level), counts them and adds up the amounts still captured. *Estimated loss
+  avoided* is the amount of the payments proposed for refund: the money that
+  would be lost to chargebacks if they are fraudulent.
+- **The LLM only writes the summary** (2 sentences, Groq) from those facts and
+  the reasons of the flagged payments. As for alert explanations, every number
+  in its text must appear in the facts, otherwise PayGuard retries once and
+  falls back to a template. The reasons given to it say "cross-border", never
+  which country.
+- **One click to apply**: **✅ Apply this plan** records the approvals and
+  monitors at once. If the plan has refunds, a second dialog lists them
+  (amount, payer, score) and refunds only on **Yes, refund them**; **Not now**
+  leaves them in the queue. Payments decided since the plan was made are left
+  alone, and one PayPal failure does not stop the others.
+- **Every decision is logged** in the `decisions` table with its source:
+  `seller` (manual), `agent_plan` (approved plan) or `paypal` (refunded
+  directly in PayPal, seen by webhook). The decision history of each payment
+  shows it.
+
 ## Risk model
 
 The trained model ships in `models/` (`payguard_lgbm.txt`, ~0.05 MB, plus
