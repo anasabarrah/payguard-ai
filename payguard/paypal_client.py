@@ -25,6 +25,13 @@ class PayPalError(RuntimeError):
         self.body = body
 
     @property
+    def issue(self) -> str:
+        """PayPal's machine-readable reason, e.g. REFUND_FAILED_INSUFFICIENT_FUNDS."""
+        body = self.body if isinstance(self.body, dict) else {}
+        detail = (body.get("details") or [{}])[0]
+        return detail.get("issue") or body.get("name") or f"HTTP_{self.status}"
+
+    @property
     def short(self) -> str:
         """One readable line, e.g. 'REFUND_FAILED_INSUFFICIENT_FUNDS: Capture could not be ...'."""
         body = self.body if isinstance(self.body, dict) else {}
@@ -79,8 +86,11 @@ class PayPalClient:
             h["PayPal-Request-Id"] = str(uuid.uuid4())
         if headers:
             h.update(headers)
-        resp = self.session.request(method, f"{self.base_url}{path}", json=json,
-                                    data=data, params=params, headers=h, timeout=self.timeout)
+        try:
+            resp = self.session.request(method, f"{self.base_url}{path}", json=json,
+                                        data=data, params=params, headers=h, timeout=self.timeout)
+        except requests.RequestException as e:
+            raise PayPalError(503, {"name": "PAYPAL_UNREACHABLE", "message": str(e)}) from e
         if resp.status_code >= 400:
             raise PayPalError(resp.status_code, _body(resp))
         return resp.json() if resp.content else {}
@@ -177,6 +187,27 @@ class PayPalClient:
             if page >= data.get("total_pages", 1):
                 return out
             page += 1
+
+
+REFUND_MESSAGES = {
+    "REFUND_FAILED_INSUFFICIENT_FUNDS":
+        "The demo seller's PayPal sandbox balance is too low for this refund right now.",
+    "CAPTURE_FULLY_REFUNDED": "PayPal says it has already been fully refunded.",
+    "REFUND_AMOUNT_EXCEEDED": "PayPal says it has already been fully refunded.",
+    "REFUND_TIME_LIMIT_EXCEEDED": "It is too old to be refunded through PayPal.",
+    "REFUND_NOT_ALLOWED": "PayPal does not allow this refund.",
+    "PERMISSION_DENIED": "The demo seller's PayPal sandbox account is not allowed to refund right now.",
+    "PAYPAL_UNREACHABLE": "PayPal is not responding right now. Please try again in a minute.",
+}
+
+
+def refund_failure_message(error: PayPalError) -> str:
+    """A polite, non-technical sentence for a refund PayPal refused."""
+    reason = REFUND_MESSAGES.get(error.issue)
+    if reason is None:
+        reason = ("PayPal is having trouble right now. Please try again in a minute."
+                  if error.status >= 500 else "PayPal declined the refund.")
+    return f"{reason} Nothing was refunded, and it stays in your review queue."
 
 
 def capture_id_of(captured_order: dict) -> str:

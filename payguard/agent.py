@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from payguard.explain import Explanation, Reason, describe, explain, queue_summary, top_reasons
 from payguard.features import features_from_payments
 from payguard.ledger import Ledger
-from payguard.paypal_client import PayPalClient, PayPalError
+from payguard.paypal_client import PayPalClient, PayPalError, refund_failure_message
 from payguard.risk import RiskModel
 
 ACTIONS = ("accept", "monitor", "refund")
@@ -136,10 +136,10 @@ class PayGuardAgent:
             try:
                 res = self.execute(alert, action, seller_confirmed=True, source="agent_plan")
             except PayPalError as e:  # one PayPal failure must not stop the plan
-                failed.append((cid, e.short))
+                failed.append((cid, refund_failure_message(e), e.issue))
                 continue
             except (ValueError, RuntimeError) as e:
-                failed.append((cid, str(e)))
+                failed.append((cid, str(e), type(e).__name__))
                 continue
             done[action].append(res["refund_id"] or cid)
         return {"done": done, "skipped": skipped, "failed": failed}

@@ -1,6 +1,7 @@
 """PayPal sandbox demo shop and verified webhook receiver."""
 from __future__ import annotations
 
+import html
 import json
 import os
 from functools import lru_cache
@@ -63,10 +64,25 @@ async def read_json(request: Request) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def judge_box() -> str:
+    """Login of the sandbox buyer account set aside for judges (JUDGE_BUYER_* env vars)."""
+    email, password = os.getenv("JUDGE_BUYER_EMAIL"), os.getenv("JUDGE_BUYER_PASSWORD")
+    warning = ('<p class="warn">⚠️ PayPal <b>sandbox</b> test account only: no real money, no real '
+               'card. Never type a real PayPal login on this demo.</p>')
+    if not (email and password):
+        return ('<section class="judge"><h3>Hackathon judges: test buyer account</h3>'
+                '<p style="margin:0">Use the sandbox buyer login given in the project README, '
+                'or any PayPal sandbox personal account.</p>' + warning + '</section>')
+    return ('<section class="judge"><h3>Hackathon judges: log in to PayPal with this test buyer'
+            '</h3><dl><dt>Email</dt><dd>' + html.escape(email) + '</dd><dt>Password</dt><dd>'
+            + html.escape(password) + '</dd></dl>' + warning + '</section>')
+
+
 async def shop(request):
     client_id = os.getenv("PAYPAL_CLIENT_ID", "")
     catalog = json.dumps(PRODUCTS).replace("</", "<\\/")
     page = (SHOP_HTML.replace("__PAYPAL_CLIENT_ID__", quote(client_id, safe=""))
+            .replace("__JUDGE_BOX__", judge_box())
             .replace("__PRODUCTS_JSON__", catalog))
     return HTMLResponse(page)
 

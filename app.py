@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from payguard.agent import PayGuardAgent, QueuePlan
 from payguard.explain import DEFAULT_GROQ_MODEL
 from payguard.ledger import Ledger
-from payguard.paypal_client import PayPalClient, PayPalError
+from payguard.paypal_client import PayPalClient, PayPalError, refund_failure_message
 from payguard.risk import RiskModel
 from payguard.simulate import simulate_payments
 
@@ -148,8 +148,14 @@ with st.sidebar:
             st.session_state["selected"] = None
             st.toast(f"{len(ids)} sandbox payments created", icon="✅")
         except PayPalError as e:
-            st.error(f"PayPal error: {e.short}")
+            st.error("PayPal could not create the demo payments right now. Please try again "
+                     "in a minute.", icon="ℹ️")
+            st.caption(f"Technical detail: {e.issue}")
         bar.empty()
+    if st.button("🧹 Reset demo", width="stretch", key="b_reset",
+                 help="Empties PayGuard's local ledger so the next person starts clean. "
+                      "Nothing is changed on PayPal."):
+        st.session_state["reset_demo"] = True
 
     st.markdown("#### Filters")
     level_filter = st.multiselect("Risk level", ["high", "medium", "low"],
@@ -164,6 +170,37 @@ with st.sidebar:
         f"Monitor ≥ **{model.thresholds['monitor']:g}** · Refund ≥ **{model.thresholds['refund']:g}**  \n"
         "Score = percentile among reference payments. Sandbox only, synthetic training data."
     )
+
+
+# --- demo reset -------------------------------------------------------------------
+
+def close_reset_dialog():
+    st.session_state.pop("reset_demo", None)
+
+
+@st.dialog("Reset the demo?", on_dismiss=close_reset_dialog)
+def confirm_reset():
+    st.write("This deletes every payment, decision and explanation from PayGuard's local "
+             "ledger, so the next person starts from an empty dashboard.")
+    st.caption("Nothing is changed on PayPal: payments and refunds already made stay in the "
+               "sandbox. Everyone using this demo URL shares the same ledger.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, reset", type="primary", width="stretch"):
+        ledger.reset()
+        for key in ("queue_plan", "selected", "refund_for", "plan_refunds", "payments_table"):
+            st.session_state.pop(key, None)
+        st.session_state["flash_reset"] = True
+        close_reset_dialog()
+        st.rerun()
+    if c2.button("Cancel", width="stretch"):
+        close_reset_dialog()
+        st.rerun()
+
+
+if st.session_state.get("reset_demo"):
+    confirm_reset()
+if st.session_state.pop("flash_reset", False):
+    st.toast("Demo reset: the ledger is empty. PayPal was not touched.", icon="🧹")
 
 
 # --- header & KPIs ------------------------------------------------------------
@@ -254,8 +291,7 @@ def confirm_plan_refunds(plan: QueuePlan):
             st.session_state["plan_flash"] = (f"{len(refunds)} refund(s) completed on PayPal: "
                                               + ", ".join(f"`{r}`" for r in refunds))
         if res["failed"]:
-            st.session_state["plan_flash_error"] = " · ".join(f"capture {c}: {e}"
-                                                              for c, e in res["failed"])
+            st.session_state["plan_flash_error"] = res["failed"]
         st.session_state.pop("queue_plan", None)
         close_plan_refunds()
         st.rerun()
@@ -279,8 +315,16 @@ with st.container(border=True):
         st.session_state["queue_plan"] = (plan, summary, source)
     if msg := st.session_state.pop("plan_flash", None):
         st.success(msg, icon="✅")
-    if msg := st.session_state.pop("plan_flash_error", None):
-        st.error(f"Some refunds failed: {msg}", icon="⚠️")
+    if failed := st.session_state.pop("plan_flash_error", None):
+        by_id = {a.capture_id: a for a in alerts}
+        for message in dict.fromkeys(m for _, m, _ in failed):
+            ids = [c for c, m, _ in failed if m == message]
+            total = sum(by_id[c].payment["amount"] for c in ids if c in by_id)
+            what = "1 refund" if len(ids) == 1 else f"{len(ids)} refunds"
+            message = message if len(ids) == 1 else (message.replace("it has", "they have")
+                      .replace("It is", "They are").replace("it stays", "they stay"))
+            st.warning(f"{what} (${total:,.2f}) could not be made. {message}", icon="ℹ️")
+        st.caption("Technical detail: " + ", ".join(sorted({i for _, _, i in failed})))
 
     if stored := st.session_state.get("queue_plan"):
         plan, summary, source = stored
@@ -404,9 +448,9 @@ def confirm_refund(a):
             res = agent.execute(a, "refund", seller_confirmed=True)
             st.session_state["flash"] = f"Refund {res['refund_id']} completed on PayPal."
         except PayPalError as e:
-            st.session_state["flash_error"] = f"Refund failed: {e.short}"
+            st.session_state["flash_error"] = (refund_failure_message(e), e.issue)
         except (ValueError, RuntimeError) as e:
-            st.session_state["flash_error"] = f"Refund failed: {e}"
+            st.session_state["flash_error"] = (f"The refund was not made: {e}.", None)
         close_refund_dialog()
         st.rerun()
     if c2.button("Cancel", width="stretch"):
@@ -418,8 +462,11 @@ with right:
     st.markdown('<div class="pg-section">Alert detail</div>', unsafe_allow_html=True)
     if msg := st.session_state.pop("flash", None):
         st.success(msg, icon="✅")
-    if msg := st.session_state.pop("flash_error", None):
-        st.error(msg, icon="⚠️")
+    if err := st.session_state.pop("flash_error", None):
+        message, issue = err
+        st.warning(message, icon="ℹ️")
+        if issue:
+            st.caption(f"Technical detail: {issue}")
 
     p, lv = alert.payment, LEVELS[alert.level]
     status, status_color = DECISIONS[p.get("decision")]

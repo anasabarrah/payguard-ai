@@ -52,6 +52,13 @@
   .pill.high { color:var(--bad); background:var(--badbg); }
   .help { margin-top:28px; color:var(--muted); font-size:.9rem; }
   .help b { color:var(--ink); }
+  .judge { margin:0 0 24px; background:#fff; border:1px solid var(--line); border-left:4px solid var(--warn);
+           border-radius:12px; padding:14px 18px; }
+  .judge h3 { margin:0 0 6px; font-size:1rem; }
+  .judge dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 12px; margin:8px 0; }
+  .judge dt { color:var(--muted); }
+  .judge dd { margin:0; font-family:ui-monospace, Menlo, Consolas, monospace; word-break:break-all; }
+  .judge .warn { color:var(--warn); font-size:.86rem; margin:0; }
 </style>
 </head>
 <body>
@@ -70,6 +77,7 @@
 </section>
 
 <main>
+  __JUDGE_BOX__
   <div id="result" class="result" role="status" aria-live="polite"></div>
   <div id="grid" class="grid"></div>
   <p class="help">To pay, click a PayPal button and log in with a <b>sandbox personal (buyer) account</b>

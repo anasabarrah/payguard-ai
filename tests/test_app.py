@@ -134,3 +134,59 @@ def test_agent_refunds_can_be_declined(app):
     assert not app.exception
     app.client.refund_capture.assert_not_called()
     assert Ledger().get("CAP9")["decision"] is None
+
+
+def test_reset_demo_asks_then_empties_the_ledger_without_paypal(app):
+    _clear_caches()
+    app.run()
+    app.button(key="b_reset").click().run()
+    assert not app.exception and len(Ledger().list_payments()) == 5      # dialog only
+    next(b for b in app.button if b.label == "Cancel").click().run()
+    assert len(Ledger().list_payments()) == 5
+    app.button(key="b_reset").click().run()
+    next(b for b in app.button if b.label == "Yes, reset").click().run()
+    assert not app.exception
+    assert Ledger().list_payments() == []
+    assert any("No payments yet" in i.value for i in app.info)
+    app.client.refund_capture.assert_not_called()
+    app.client.create_order.assert_not_called()
+
+
+def test_failed_refund_shows_a_polite_message(app):
+    from payguard.paypal_client import PayPalError
+    _clear_caches()
+    app.client.refund_capture.side_effect = PayPalError(422, {
+        "name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "REFUND_FAILED_INSUFFICIENT_FUNDS"}]})
+    app.run()
+    app.button(key="b_refund").click().run()
+    next(b for b in app.button if b.label == "Yes, refund").click().run()
+    assert not app.exception and not app.error
+    assert any("balance is too low" in w.value for w in app.warning)
+    assert Ledger().get("CAP9")["decision"] is None
+
+
+def test_failed_plan_refund_shows_a_polite_message(app):
+    from payguard.paypal_client import PayPalError
+    _clear_caches()
+    app.client.refund_capture.side_effect = PayPalError(422, {
+        "details": [{"issue": "REFUND_FAILED_INSUFFICIENT_FUNDS"}]})
+    app.run()
+    app.button(key="b_review_queue").click().run()
+    app.button(key="b_apply_plan").click().run()
+    next(b for b in app.button if b.label == "Yes, refund them").click().run()
+    assert not app.exception and not app.error
+    assert any("1 refund ($900.00) could not be made" in w.value for w in app.warning)
+
+
+def test_several_failed_plan_refunds_read_in_the_plural(app):
+    from payguard.paypal_client import PayPalError
+    led = Ledger()
+    led.record_capture(_order(8, 950.0, "2026-10-30T14:30:00Z"), payer_email="n2@z.jp", country="JP")
+    _clear_caches()
+    app.client.refund_capture.side_effect = PayPalError(403, {"name": "PERMISSION_DENIED"})
+    app.run()
+    app.button(key="b_review_queue").click().run()
+    app.button(key="b_apply_plan").click().run()
+    next(b for b in app.button if b.label == "Yes, refund them").click().run()
+    [w] = [w.value for w in app.warning if "could not be made" in w.value]
+    assert w.startswith("2 refunds ($1,850.00) could not be made.") and "they stay" in w

@@ -165,6 +165,17 @@ class Ledger:
             (value, value, capture_id),
         )
 
+    def reset(self) -> None:
+        """Forget every payment, refund and decision (demo reset). PayPal is not touched.
+
+        Processed webhook ids are kept, so a late redelivery of an old event
+        does not bring a deleted payment back.
+        """
+        with self.conn:
+            self.conn.execute("DELETE FROM decisions")
+            self.conn.execute("DELETE FROM refunds")
+            self.conn.execute("DELETE FROM payments")
+
     def version(self) -> tuple:
         """Cheap fingerprint of the ledger; it changes whenever a payment, refund or decision does."""
         row = self.conn.execute(

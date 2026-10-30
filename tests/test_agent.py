@@ -161,12 +161,15 @@ def test_plan_reasons_never_name_the_country(agent):
     assert not any("DE" in t for t in plan.reasons["CAP9"])
 
 
-def test_paypal_refusal_is_reported_in_one_readable_line(agent):
+def test_paypal_refusal_is_reported_politely(agent):
     from payguard.paypal_client import PayPalError
     agent.paypal.refund_capture.side_effect = PayPalError(422, {
         "name": "UNPROCESSABLE_ENTITY", "details": [{
             "issue": "REFUND_FAILED_INSUFFICIENT_FUNDS",
             "description": "Capture could not be refunded due to insufficient funds."}]})
     res = agent.apply_plan(agent.plan_queue(), refunds_confirmed=True)
-    assert res["failed"] == [("CAP9", "REFUND_FAILED_INSUFFICIENT_FUNDS: Capture could not be "
-                                      "refunded due to insufficient funds.")]
+    [(cid, message, issue)] = res["failed"]
+    assert (cid, issue) == ("CAP9", "REFUND_FAILED_INSUFFICIENT_FUNDS")
+    assert message.startswith("The demo seller's PayPal sandbox balance is too low")
+    assert "Nothing was refunded" in message and "{" not in message
+    assert agent.ledger.get("CAP9")["decision"] is None

@@ -4,6 +4,72 @@ AI agent that reviews a seller's PayPal payments for fraud, explains every
 alert in plain English, and proposes an action. The seller confirms before
 anything happens on PayPal. Built for the PayPal AI Hackathon.
 
+## For judges: try it in 2 minutes
+
+Nothing to install. Everything runs on the **PayPal sandbox**: no real money.
+
+- **App (seller dashboard):** https://payguard-ai-1p86.onrender.com
+- **Demo shop (buyer side):** https://payguard-ai-1p86.onrender.com/shop/
+
+The app is on Render's free plan: if it has been idle, the first visit takes
+about a minute to wake up.
+
+1. **Start clean.** In the left sidebar, click **🧹 Reset demo**, then **Yes, reset**.
+   This empties PayGuard's own ledger only; nothing is changed on PayPal.
+2. **Create payments.** Click **⚡ Simulate payments**. About 20 seconds later,
+   10 real sandbox payments are listed: 6 low, 2 medium and 2 high risk.
+3. **Open an alert.** Click a row in the table (for example a *Medium* one).
+   On the right: the 0–100 score, the plain-English reason written by the
+   LLM (every number checked), the top SHAP reasons and PayGuard's proposal.
+4. **Let the agent work.** Click **🤖 Let the agent review the queue**. The
+   agent summarises its plan for all pending payments, e.g. *"2 to refund, 2
+   to monitor, 6 to approve, estimated loss avoided: $2,415.14"*.
+5. **Apply the plan.** Click **✅ Apply this plan**: approvals and monitors are
+   recorded at once. A second dialog lists the refunds; click **Yes, refund
+   them** to send them to PayPal (or **Not now**).
+6. **Buy something yourself.** Click **🛍️ Open demo shop**, pick an item, click
+   the PayPal button and log in with the sandbox buyer account below. Go back
+   to the dashboard: your payment appears by itself within a few seconds,
+   scored, with a **✓ PayPal webhook** badge once PayPal's signed webhook is
+   verified.
+
+**Sandbox buyer account for judges** (also shown on the shop page):
+
+| | |
+|---|---|
+| Email | `JUDGE_SANDBOX_EMAIL_HERE` |
+| Password | `JUDGE_SANDBOX_PASSWORD_HERE` |
+
+> ⚠️ This is a **PayPal sandbox test account**: it only works on
+> sandbox.paypal.com, holds no real money and has no real card. Never type a
+> real PayPal login in this demo.
+
+All visitors share one demo ledger: if someone else is testing at the same
+time, their payments appear too. **Reset demo** gives you a clean start.
+
+![Walkthrough: dashboard, alert, agent plan, refund confirmation, shop, reset](docs/walkthrough/walkthrough.gif)
+
+<details><summary>Step-by-step screenshots</summary>
+
+| | |
+|---|---|
+| 2. Ten simulated payments, scored | ![](docs/walkthrough/1_simulated.png) |
+| 3. An alert, explained | ![](docs/walkthrough/2_alert.png) |
+| 4. The agent's plan for the whole queue | ![](docs/walkthrough/3_agent_plan.png) |
+| 5. Refunds need a second confirmation | ![](docs/walkthrough/4_confirm_refunds.png) |
+| 6. The demo shop (PayPal buttons) | ![](docs/walkthrough/5_shop.png) |
+| 1. Reset demo, with confirmation | ![](docs/walkthrough/6_reset.png) |
+
+If PayPal refuses a refund (for example when the sandbox seller's balance is
+too low), PayGuard says so plainly, nothing is refunded and the payment stays
+in the queue:
+
+![Refund declined by PayPal](docs/walkthrough/refund_declined.png)
+
+</details>
+
+## Features
+
 - **Risk score 0–100** for every payment (LightGBM)
 - **Up to 3 reasons** per alert (SHAP), plus **one plain-English sentence** written
   by an LLM on Groq, with every number checked against those reasons
@@ -48,6 +114,7 @@ cp .env.example .env                   # then fill in the values
 | `PAYPAL_WEBHOOK_ID` | for webhooks | ID printed by `scripts/register_paypal_webhook.py`; without it every webhook is refused |
 | `GROQ_API_KEY` | no | plain-English explanations (free key at console.groq.com); without it a template sentence is used |
 | `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
+| `JUDGE_BUYER_EMAIL`, `JUDGE_BUYER_PASSWORD` | no | sandbox buyer login shown on `/shop/` for the judges; never a real account |
 
 `.env` is listed in `.gitignore` and is never committed.
 
@@ -132,8 +199,9 @@ and a `render.yaml` Blueprint for a free web service.
 
 1. In Render, choose **New → Blueprint** and connect this GitHub repository.
 2. Render reads `render.yaml` and asks for the secret values:
-   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID` and
-   `GROQ_API_KEY` (optional). Set the webhook ID after registering it above,
+   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`,
+   `GROQ_API_KEY` (optional) and `JUDGE_BUYER_EMAIL` / `JUDGE_BUYER_PASSWORD`
+   (optional, sandbox buyer shown on the shop page). Set the webhook ID after registering it above,
    then redeploy.
    `GROQ_MODEL` is preset.
 3. Deploy. The app is served on the `onrender.com` URL Render gives you; the
@@ -146,11 +214,21 @@ Behaviour on the free plan:
   about a minute to wake it.
 - The disk is ephemeral: the ledger (`data/ledger.db`) starts empty after each
   deploy or restart. Click **⚡ Simulate payments** to create demo payments.
+- **🧹 Reset demo** (sidebar, with a confirmation) empties the ledger for
+  everyone: payments, refunds and decisions. It never calls PayPal; the
+  sandbox keeps its payments. Processed webhook ids are kept, so a late
+  redelivery cannot bring a deleted payment back.
 - All visitors share one ledger, and anyone with the URL can trigger sandbox
   refunds. Only use sandbox credentials.
 - Refunds fail with `REFUND_FAILED_INSUFFICIENT_FUNDS` when the sandbox
   business account's balance is lower than the refund (each demo run refunds
-  up to ~$3,000). Keep a large balance on that sandbox account.
+  up to ~$3,000). Keep a large balance on that sandbox account. Any refund
+  PayPal refuses is shown as a short, plain message (the PayPal error code is
+  in small print below), nothing is recorded as refunded, and the payment stays
+  in the queue.
+- **Simulate payments** needs card processing on the sandbox business
+  account; if PayPal answers `PAYEE_NOT_ENABLED_FOR_CARD_PROCESSING`, enable
+  card payments for the sandbox app/account in the PayPal developer dashboard.
 
 The app runs as one process and uses about 250 MB of RAM with the model
 loaded and a dashboard open, within the free plan's 512 MB.
@@ -226,7 +304,8 @@ and the cross-border flag have an effect (see limitations), so alerts show 2 rea
 The LLM receives only the score and the reasons as text, and is asked to
 copy numbers exactly. Before a sentence is shown, every number in it, whether
 written in digits ("22.5") or in words ("twenty"), must appear in those
-facts. If not, PayGuard retries once and then falls back to a fill-in-the-blanks
+facts, and the sentence may not name another risk level than the payment's
+(e.g. "high risk" for a medium alert). If not, PayGuard retries once and then falls back to a fill-in-the-blanks
 template, which is also used with no `GROQ_API_KEY` or on any API error. The UI
 labels which of the two produced the sentence.
 

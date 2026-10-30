@@ -233,3 +233,18 @@ def test_ledger_version_changes_on_every_kind_of_update(ledger):
     ledger.record_refund("CAP-2", {"id": "R", "amount": {"value": "5.00"}})
     versions.append(ledger.version())
     assert len(set(versions)) == len(versions)
+
+
+def test_judge_login_is_shown_with_a_sandbox_warning(http, monkeypatch):
+    monkeypatch.setenv("JUDGE_BUYER_EMAIL", "judge@personal.example.com")
+    monkeypatch.setenv("JUDGE_BUYER_PASSWORD", "pa<ss>")
+    page = http.get("/shop/").text
+    assert "judge@personal.example.com" in page and "pa&lt;ss&gt;" in page
+    assert "sandbox</b> test account only" in page
+
+
+def test_shop_without_judge_login_points_to_the_readme(http, monkeypatch):
+    monkeypatch.delenv("JUDGE_BUYER_EMAIL", raising=False)
+    monkeypatch.delenv("JUDGE_BUYER_PASSWORD", raising=False)
+    page = http.get("/shop/").text
+    assert "given in the project README" in page and "__JUDGE_BOX__" not in page

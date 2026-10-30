@@ -105,3 +105,38 @@ def test_webhook_signature_failure_is_false(client):
 
 def test_webhook_signature_rejects_missing_headers(client):
     assert not client.verify_webhook_signature("WH1", {}, b'{"id":"EV1"}')
+
+
+@pytest.mark.parametrize("status,body,expected", [
+    (422, {"details": [{"issue": "REFUND_FAILED_INSUFFICIENT_FUNDS"}]}, "balance is too low"),
+    (422, {"details": [{"issue": "CAPTURE_FULLY_REFUNDED"}]}, "already been fully refunded"),
+    (403, {"name": "PERMISSION_DENIED"}, "not allowed to refund"),
+    (503, {"name": "PAYPAL_UNREACHABLE"}, "not responding"),
+    (500, "<html>oops</html>", "trouble right now"),
+    (422, {"details": [{"issue": "SOMETHING_NEW"}]}, "declined the refund"),
+])
+def test_refund_failures_get_a_polite_sentence(status, body, expected):
+    from payguard.paypal_client import refund_failure_message
+    message = refund_failure_message(PayPalError(status, body))
+    assert expected in message and message.endswith("it stays in your review queue.")
+
+
+def test_network_error_becomes_paypal_error(client):
+    import requests
+    client.session.request.side_effect = requests.ConnectionError("boom")
+    with pytest.raises(PayPalError) as exc:
+        client.get_order("O1")
+    assert exc.value.issue == "PAYPAL_UNREACHABLE"
+
+
+def test_reset_empties_the_ledger_but_keeps_webhook_ids(tmp_path):
+    led = Ledger(tmp_path / "r.db")
+    led.record_capture(ORDER, country="FR")
+    led.record_decision("CAP1", "monitor")
+    led.record_refund("CAP1", {"id": "R1", "amount": {"value": "1.00"}})
+    event = {"id": "EV1", "event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {
+        "id": "CAP1", "amount": {"value": "10.00", "currency_code": "USD"}}}
+    led.record_webhook(event)
+    led.reset()
+    assert led.list_payments() == [] and led.decisions() == []
+    assert not led.record_webhook(event) and led.list_payments() == []   # old event stays gone
