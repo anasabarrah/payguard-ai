@@ -116,3 +116,18 @@ def test_queue_facts_list_every_number():
     from payguard.explain import numbers_in, queue_facts
     facts = queue_facts(COUNT, TOTAL)
     assert {10, 2, 6, 2614.1, 461.22, 270.11} <= numbers_in(facts)
+
+
+def test_sentence_naming_the_wrong_risk_level_is_rejected():
+    ok = "Score 99.4 because the amount is 22.5x the usual ticket."
+    assert is_grounded(ok, 99.4, REASONS, "high")
+    assert is_grounded("A high-risk score of 99.4.", 99.4, REASONS, "high")
+    assert not is_grounded("The payment got a high risk score of 99.4.", 99.4, REASONS, "medium")
+    assert not is_grounded("A low score of 99.4.", 99.4, REASONS, "high")
+
+
+def test_llm_sentence_with_wrong_level_falls_back_to_template(monkeypatch):
+    import payguard.explain as ex
+    monkeypatch.setattr(ex, "llm_complete", lambda *a, **k: "It got a high risk score of 99.4.")
+    e = ex.explain(99.4, "medium", REASONS)
+    assert e.source == "template" and "(medium)" in e.sentence

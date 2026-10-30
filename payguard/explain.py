@@ -104,7 +104,15 @@ def allowed_numbers(score: float, reasons: list[Reason]) -> set[float]:
     return numbers_in(facts) | {3.0}  # "3 reasons" is harmless
 
 
-def is_grounded(sentence: str, score: float, reasons: list[Reason]) -> bool:
+def levels_in(text: str) -> set[str]:
+    """Risk levels a text names, e.g. "high-risk" or "a medium risk score"."""
+    return set(re.findall(r"\b(low|medium|high)(?:[\s-]+risk|\s+score)", text.lower()))
+
+
+def is_grounded(sentence: str, score: float, reasons: list[Reason], level: str = "") -> bool:
+    """Every number comes from the facts, and no other risk level than the real one is named."""
+    if level and not levels_in(sentence) <= {level}:
+        return False
     return numbers_in(sentence) <= allowed_numbers(score, reasons)
 
 
@@ -150,7 +158,7 @@ def llm_complete(prompt: str, timeout: float = 15.0, max_tokens: int = 2000) -> 
 def explain(score: float, level: str, reasons: list[Reason], use_llm: bool = True) -> Explanation:
     for _ in range(2 if use_llm else 0):
         text = llm_sentence(score, level, reasons)
-        if text and is_grounded(text, score, reasons):
+        if text and is_grounded(text, score, reasons, level):
             return Explanation(score, level, reasons, text, "llm")
     return Explanation(score, level, reasons, template_sentence(score, level, reasons), "template")
 
