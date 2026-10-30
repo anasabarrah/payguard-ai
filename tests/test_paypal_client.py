@@ -1,0 +1,70 @@
+"""Offline tests for the PayPal client and ledger (HTTP is mocked)."""
+from unittest.mock import MagicMock
+
+import pytest
+
+from payguard.ledger import Ledger
+from payguard.paypal_client import PayPalClient, PayPalError, capture_id_of
+
+
+def _resp(status, payload):
+    r = MagicMock(status_code=status, content=b"x")
+    r.json.return_value = payload
+    return r
+
+
+@pytest.fixture
+def client():
+    c = PayPalClient(client_id="id", client_secret="secret", base_url="https://example.test")
+    c.session = MagicMock()
+    c.session.post.return_value = _resp(200, {"access_token": "tok", "expires_in": 3600})
+    return c
+
+
+ORDER = {
+    "id": "ORDER1", "status": "COMPLETED",
+    "purchase_units": [{"payments": {"captures": [{
+        "id": "CAP1", "status": "COMPLETED", "create_time": "2026-10-30T10:00:00Z",
+        "amount": {"currency_code": "USD", "value": "10.00"}}]}}],
+}
+
+
+def test_token_is_cached(client):
+    assert client.get_access_token() == "tok"
+    client.get_access_token()
+    assert client.session.post.call_count == 1
+
+
+def test_create_order_body(client):
+    client.session.request.return_value = _resp(201, {"id": "O", "status": "CREATED"})
+    client.create_order(9.5, currency="EUR")
+    _, kwargs = client.session.request.call_args
+    assert kwargs["json"]["purchase_units"][0]["amount"] == {"currency_code": "EUR", "value": "9.50"}
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert "PayPal-Request-Id" in kwargs["headers"]
+
+
+def test_error_raises(client):
+    client.session.request.return_value = _resp(422, {"name": "UNPROCESSABLE_ENTITY"})
+    with pytest.raises(PayPalError) as e:
+        client.capture_order("O")
+    assert e.value.status == 422
+
+
+def test_missing_credentials(monkeypatch):
+    monkeypatch.setattr("payguard.paypal_client.load_dotenv", lambda: None)
+    monkeypatch.delenv("PAYPAL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("PAYPAL_CLIENT_SECRET", raising=False)
+    with pytest.raises(ValueError):
+        PayPalClient()
+
+
+def test_ledger_capture_and_refund(tmp_path):
+    led = Ledger(tmp_path / "l.db")
+    assert capture_id_of(ORDER) == "CAP1"
+    led.record_capture(ORDER, country="FR")
+    led.record_refund("CAP1", {"amount": {"value": "4.00"}})
+    assert led.get("CAP1")["status"] == "PARTIALLY_REFUNDED"
+    led.record_refund("CAP1", {"amount": {"value": "6.00"}})
+    p = led.list_payments()[0]
+    assert p["status"] == "REFUNDED" and p["refunded"] == 10.0 and p["country"] == "FR"
