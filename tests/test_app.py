@@ -22,7 +22,7 @@ def app(tmp_path, monkeypatch):
         led.record_capture(_order(i, 30.0, f"2026-10-30T{h:02d}:00:00Z"),
                            payer_email=f"buyer{i}@x.com", country="US")
     led.record_capture(_order(9, 900.0, "2026-10-30T14:00:00Z"),
-                       payer_email="new@z.ng", country="NG")
+                       payer_email="new@z.de", country="DE")
     client = MagicMock()
     client.refund_capture.return_value = {"id": "REF9", "status": "COMPLETED",
                                           "amount": {"currency_code": "USD", "value": "900.00"}}

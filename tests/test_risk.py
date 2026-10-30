@@ -3,8 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from payguard.features import (COUNTRIES, FEATURES, build_paysim_features,
-                               features_from_payments, simulate_country)
+from payguard.features import (FEATURES, build_paysim_features, features_from_payments,
+                               simulate_cross_border)
 from payguard.risk import RiskModel, to_score
 
 
@@ -27,11 +27,12 @@ def test_paysim_payer_history_uses_only_past():
     assert f[f.step == 5].iloc[0].amount_ratio == pytest.approx(2.0)  # 200 / median(100)
 
 
-def test_simulated_country_is_reproducible_and_skewed():
+def test_simulated_cross_border_is_reproducible_and_skewed():
     y = np.r_[np.zeros(20000), np.ones(20000)]
-    c1, c2 = simulate_country(y, seed=1), simulate_country(y, seed=1)
-    assert (c1 == c2).all() and set(c1) <= set(COUNTRIES)
-    assert (c1[:20000] == "US").mean() > (c1[20000:] == "US").mean() + 0.2
+    c1, c2 = simulate_cross_border(y, seed=1), simulate_cross_border(y, seed=1)
+    assert (c1 == c2).all() and set(c1) <= {0, 1}
+    assert c1[:20000].mean() == pytest.approx(0.20, abs=0.02)
+    assert c1[20000:].mean() == pytest.approx(0.50, abs=0.02)
 
 
 def test_features_from_payments():
@@ -41,11 +42,13 @@ def test_features_from_payments():
         {"created_at": "2026-10-30T12:00:00Z", "amount": 200.0, "payer_email": "b@x.com", "country": "ZZ"},
     ]
     f = features_from_payments(pays)
-    assert list(f.columns) == FEATURES
+    assert list(f.columns) == FEATURES + ["payer_country"]
     assert f.payer_is_new.tolist() == [1, 0, 1]
     assert f.payer_txn_24h.tolist() == [0, 1, 0]
     assert f.amount_ratio.tolist() == pytest.approx([1.0, 3.0, 10.0])  # 200 / median(10, 30)
-    assert f.country.tolist() == ["US", "US", "OTHER"]
+    assert f.cross_border.tolist() == [0, 0, 1]
+    assert f.payer_country.tolist() == ["US", "US", "ZZ"]
+    assert features_from_payments([{**pays[0], "country": None}]).cross_border.tolist() == [0]
 
 
 def test_to_score_is_monotonic_and_bounded():
@@ -64,7 +67,7 @@ def test_saved_model_scores_payments(model):
     base = {"payer_email": "x@y.com", "country": "US"}
     pays = [{**base, "created_at": f"2026-10-30T{h:02d}:00:00Z", "amount": 20.0} for h in range(10, 20)]
     pays.append({"created_at": "2026-10-31T04:00:00Z", "amount": 900.0,
-                 "payer_email": "new@z.com", "country": "NG"})
+                 "payer_email": "new@z.com", "country": "JP"})
     out = model.score_payments(pays)
     assert out.risk_score.between(0, 100).all()
     assert out.risk_score.iloc[-1] > out.risk_score.iloc[:-1].max()

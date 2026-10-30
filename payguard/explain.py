@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-from payguard.features import FEATURES, SELLER_COUNTRY
+from payguard.features import FEATURES
 from payguard.risk import RiskModel
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -43,19 +43,18 @@ class Explanation:
     source: str       # "llm" or "template"
 
 
-def describe(feature: str, value) -> str:
+def describe(feature: str, value, country: str = "") -> str:
     if feature == "amount_ratio":
         return f"The amount is {value:.1f}x the median payment of the previous 24 hours"
     if feature == "payer_txn_24h":
         return f"The payer made {int(value)} other payments in the previous 24 hours"
     if feature == "payer_is_new":
         return "This is the first payment from this payer" if value else "The payer has paid before"
-    if feature == "country":
-        if value == SELLER_COUNTRY:
-            return f"The payer is in the seller's country ({value})"
-        if value == "OTHER":
-            return "The payer is in a less common country"
-        return f"The payer is in {value}, a cross-border payment"
+    if feature == "cross_border":
+        where = f" (payer in {country})" if country else ""
+        if value:
+            return f"This is a cross-border payment{where}"
+        return f"This is a domestic payment{where}"
     raise ValueError(feature)
 
 
@@ -73,8 +72,9 @@ def top_reasons(model: RiskModel, features: pd.DataFrame, k: int = 3) -> list[li
         order = sorted(range(len(FEATURES)), key=lambda j: row[j], reverse=True)
         up = [j for j in order if row[j] > 0][:k]
         down = sorted((j for j in order if row[j] < 0), key=lambda j: row[j])[: k - len(up)]
+        country = features["payer_country"].iloc[i] if "payer_country" in features else ""
         out.append([Reason(FEATURES[j], _plain(features.iloc[i][FEATURES[j]]), float(row[j]),
-                           describe(FEATURES[j], _plain(features.iloc[i][FEATURES[j]])))
+                           describe(FEATURES[j], _plain(features.iloc[i][FEATURES[j]]), country))
                     for j in up + down])
     return out
 

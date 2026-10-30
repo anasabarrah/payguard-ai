@@ -18,9 +18,10 @@ ADDRESSES = {
     "US": ("1 Main St", "San Jose", "CA", "95131"),
     "CA": ("100 Queen St W", "Toronto", "ON", "M5H 2N2"),
     "GB": ("10 Downing St", "London", "", "SW1A 2AA"),
-    "NG": ("12 Allen Ave", "Lagos", "LA", "100001"),
-    "RO": ("Str. Lipscani 10", "Bucuresti", "B", "030031"),
-    "BR": ("Rua Augusta 100", "Sao Paulo", "SP", "01304-000"),
+    "DE": ("Unter den Linden 10", "Berlin", "", "10117"),
+    "JP": ("1-1 Marunouchi", "Chiyoda-ku", "Tokyo", "100-0005"),
+    "AU": ("200 George St", "Sydney", "NSW", "2000"),
+    "IN": ("12 MG Road", "Bengaluru", "KA", "560001"),
 }
 
 
@@ -35,30 +36,41 @@ REGULARS = [
     Buyer("Emma Johnson", "emma.johnson@example.com", "US"),
     Buyer("Liam Smith", "liam.smith@example.com", "US"),
     Buyer("Olivia Brown", "olivia.brown@example.com", "US"),
+    Buyer("Ava Martinez", "ava.martinez@example.com", "US"),
+    Buyer("Mason Lee", "mason.lee@example.com", "US"),
+]
+FOREIGN_REGULARS = [
     Buyer("Noah Tremblay", "noah.tremblay@example.ca", "CA"),
     Buyer("Amelia Clarke", "amelia.clarke@example.co.uk", "GB"),
 ]
 
 
 def demo_plan(rng: random.Random) -> list[tuple[Buyer, float, str]]:
-    """Ordinary payments first (they set the usual ticket), then suspicious ones.
+    """Ordinary payments first (they set the usual ticket), then unusual ones.
 
-    Expected levels with the shipped model: 4 low (regular buyers), 2 medium
-    (new foreign buyers, small orders), 2 high (new foreign buyers, orders
-    10x+ the usual ticket). Scores do not depend on the time of day.
+    Expected levels with the shipped model (cross-border bands: low up to
+    ~2.8x the usual ticket, medium ~2.9-8.1x, high from ~8.2x):
+      6 low     4 domestic regulars + 2 foreign buyers with a normal basket,
+                showing that a foreign payer alone is not flagged
+      2 medium  new foreign buyers, ~5x the usual ticket
+      2 high    new foreign buyers, 20x+ the usual ticket
+    Six of ten payments are ordinary, so the 24h median ticket stays at the
+    ordinary level even after repeated demos. Scores do not depend on the time.
     """
-    plan = [(b, round(rng.uniform(25, 65), 2), "regular customer")
+    plan = [(b, round(rng.uniform(40, 50), 2), "regular customer")
             for b in rng.sample(REGULARS, 4)]
+    plan += [(b, round(rng.uniform(40, 50), 2), "foreign customer, usual basket")
+             for b in FOREIGN_REGULARS]
     tag = rng.randint(100, 999)
     plan += [
-        (Buyer("M. Popescu", f"m.popescu{tag}@example.ro", "RO"),
-         round(rng.uniform(25, 45), 2), "new foreign buyer, small order"),
-        (Buyer("C. Okafor", f"c.okafor{tag}@example.ng", "NG"),
-         round(rng.uniform(25, 45), 2), "new foreign buyer, small order"),
-        (Buyer("K. Adeyemi", f"k.adeyemi{tag}@example.ng", "NG"),
-         round(rng.uniform(800, 1200), 2), "new foreign buyer, very large order"),
-        (Buyer("R. Silva", f"r.silva{tag}@example.com.br", "BR"),
-         round(rng.uniform(600, 900), 2), "new foreign buyer, large order"),
+        (Buyer("L. Becker", f"l.becker{tag}@example.de", "DE"),
+         round(rng.uniform(220, 240), 2), "new foreign buyer, unusually large order"),
+        (Buyer("H. Tanaka", f"h.tanaka{tag}@example.jp", "JP"),
+         round(rng.uniform(220, 240), 2), "new foreign buyer, unusually large order"),
+        (Buyer("S. Wilson", f"s.wilson{tag}@example.com.au", "AU"),
+         round(rng.uniform(1100, 1500), 2), "new foreign buyer, extremely large order"),
+        (Buyer("A. Sharma", f"a.sharma{tag}@example.in", "IN"),
+         round(rng.uniform(1100, 1500), 2), "new foreign buyer, extremely large order"),
     ]
     return plan
 

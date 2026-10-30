@@ -4,7 +4,7 @@
 
 Validation is used for early stopping and for choosing the action thresholds;
 the test window is only used for the reported metrics. Also trains the same
-model without the simulated `country` feature, so its contribution is visible.
+model without the simulated `cross_border` feature, so its contribution is visible.
 
 Usage: python scripts/train_model.py [--data data/raw/paysim.csv]
 Writes models/payguard_lgbm.txt and models/model_meta.json.
@@ -58,14 +58,13 @@ def load_features(csv: Path, cache: Path) -> pd.DataFrame:
 
 
 # Risk may only grow with a larger ticket, more payments in 24h, or a new payer.
-MONOTONE = {"amount_ratio": 1, "payer_txn_24h": 1, "payer_is_new": 1}
+MONOTONE = {"amount_ratio": 1, "payer_txn_24h": 1, "payer_is_new": 1, "cross_border": 1}
 
 
 def fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str]) -> lgb.Booster:
-    cats = [f for f in feats if f == "country"]
     params = {**PARAMS, "metric": "average_precision",
               "monotone_constraints": [MONOTONE.get(f, 0) for f in feats]}
-    dtrain = lgb.Dataset(train[feats], train["isFraud"], categorical_feature=cats)
+    dtrain = lgb.Dataset(train[feats], train["isFraud"])
     dvalid = lgb.Dataset(valid[feats], valid["isFraud"], reference=dtrain)
     return lgb.train(params, dtrain, num_boost_round=2000,
                      valid_sets=[dvalid],
@@ -137,8 +136,8 @@ def main() -> int:
 
     model = fit(train, valid, FEATURES)
     full = evaluate(model, FEATURES, valid, test)
-    no_country_feats = [f for f in FEATURES if f != "country"]
-    ablation = evaluate(fit(train, valid, no_country_feats), no_country_feats, valid, test)
+    no_cb_feats = [f for f in FEATURES if f != "cross_border"]
+    ablation = evaluate(fit(train, valid, no_cb_feats), no_cb_feats, valid, test)
 
     args.out.mkdir(parents=True, exist_ok=True)
     model_path = args.out / "payguard_lgbm.txt"
@@ -157,12 +156,13 @@ def main() -> int:
         "score_thresholds": {k: round(float(to_score(v, meta_ref)), 2)
                              for k, v in full["thresholds"].items()},
         "metrics": full,
-        "metrics_without_country": {k: v for k, v in ablation.items() if k != "score_reference"},
+        "metrics_without_cross_border": {k: v for k, v in ablation.items()
+                                         if k != "score_reference"},
         "feature_importance_gain": {f: round(float(g), 1) for f, g in zip(FEATURES, gain)},
     }
     (args.out / "model_meta.json").write_text(json.dumps(meta, indent=2))
-    print(json.dumps({"score_thresholds": meta["score_thresholds"], "with_country": full,
-                      "without_country": meta["metrics_without_country"]}, indent=2))
+    print(json.dumps({"score_thresholds": meta["score_thresholds"], "with_cross_border": full,
+                      "without_cross_border": meta["metrics_without_cross_border"]}, indent=2))
     print(f"saved {model_path} ({model_path.stat().st_size / 1e6:.2f} MB)")
     return 0
 

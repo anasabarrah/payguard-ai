@@ -1,4 +1,4 @@
-"""The demo must show 4 low / 2 medium / 2 high whatever the time of day."""
+"""The demo must show 6 low / 2 medium / 2 high whatever the time of day."""
 import random
 from collections import Counter
 from unittest.mock import MagicMock
@@ -9,6 +9,8 @@ from payguard.agent import PayGuardAgent
 from payguard.ledger import Ledger
 from payguard.risk import RiskModel
 from payguard.simulate import demo_plan, simulate_payments
+
+EXPECTED = {"low": 6, "medium": 2, "high": 2}
 
 
 def _run(client_ledger, model, day, hour, seed, start):
@@ -35,12 +37,12 @@ def model():
 def test_fresh_ledger(tmp_path, model, hour):
     for seed in range(15):
         led = Ledger(tmp_path / f"{hour}_{seed}.db")
-        assert _run(led, model, 2, hour, seed, 0) == {"low": 4, "medium": 2, "high": 2}, seed
+        assert _run(led, model, 2, hour, seed, 0) == EXPECTED, seed
 
 
 def test_repeated_demos_in_one_ledger(tmp_path, model):
-    """Back-to-back demos (earlier payments shift the median ticket)."""
+    """12 back-to-back demos in one day, as on a shared deployment."""
     led = Ledger(tmp_path / "busy.db")
-    for k, hour in enumerate([3, 7, 12, 16, 22, 23]):
+    for k, hour in enumerate([1, 3, 5, 7, 9, 12, 14, 16, 18, 20, 22, 23]):
         got = _run(led, model, 3, hour, 100 + k, 100 * k)
-        assert got == {"low": 4, "medium": 2, "high": 2}, (hour, got)
+        assert got == EXPECTED, (hour, got)

@@ -9,6 +9,9 @@ anything happens on PayPal. Built for the PayPal AI Hackathon.
   by an LLM on Groq, with every number checked against those reasons
 - **Agent proposal**: approve, monitor or refund. Refunds go through the
   PayPal REST API only after the seller confirms.
+- **No judgment on nationality**: the payer's country is only used as a
+  domestic vs cross-border signal, every foreign country is treated the same,
+  and the seller always makes the final decision
 - **Streamlit dashboard** with a one-click demo that creates real PayPal sandbox
   payments, some of them suspicious
 
@@ -39,17 +42,21 @@ streamlit run app.py
 ```
 
 Open http://localhost:8501 and click **⚡ Simulate payments** in the sidebar.
-It creates 8 real sandbox card payments: 4 from regular buyers, then 4 from
-new foreign buyers (2 small orders, 2 orders over 10x the usual ticket). Pick a payment
+It creates 10 real sandbox card payments: 4 domestic regulars, 2 foreign
+customers with a normal basket (CA, GB: still low, since being foreign is not
+suspicious on its own), then 4 new foreign buyers with unusually large orders:
+about 5x the usual ticket (DE, JP: medium) and 20x+ (AU, IN: high). Pick a payment
 in the table to see its score, reasons and explanation, then click
 **Approve**, **Monitor** or **Refund**. A refund asks for confirmation, then
 calls PayPal.
 
 Scores do not depend on the time of day, so the demo gives the same picture
-whenever it runs. `tests/test_demo_levels.py` checks that the 8 demo payments
-come out as 4 low, 2 medium and 2 high at 03:00, 12:00 and 22:00 UTC, on an
-empty ledger and after several earlier demos. Over 200 random demo runs, low
-scores stay at or below 82.6, medium at 97.7–98.3 and high at 99.9 or above.
+whenever it runs. `tests/test_demo_levels.py` checks that the 10 demo payments
+come out as 6 low, 2 medium and 2 high at 03:00, 12:00 and 22:00 UTC, on an
+empty ledger and after 12 back-to-back demos in one day. Over 200 random demo
+runs, low scores stay at or below 88.5, medium at 97.7–98.9 and high at 99.9 or
+above. Six of the ten payments are ordinary on purpose: this keeps the 24 h
+median ticket at the ordinary level when several people run the demo.
 
 ## Deploy on Render (free)
 
@@ -126,7 +133,7 @@ is exact for tree models and needs no extra dependency. Up to 3 reasons are
 shown: the features that pushed the score up the most, then, for a low-risk
 payment, the features that pulled it down. A feature with zero effect on the
 score is never presented as a reason. With the current model only the amount
-and the country have an effect (see limitations), so alerts show 2 reasons.
+and the cross-border flag have an effect (see limitations), so alerts show 2 reasons.
 
 The LLM receives only the score and the reasons as text, and is asked to
 copy numbers exactly. Before a sentence is shown, every number in it, whether
@@ -139,9 +146,9 @@ labels which of the two produced the sentence.
 
 | Risk level | Score | Proposal |
 |---|---|---|
-| low | < 95.7 | Approve |
-| medium | 95.7 – 99.2 | Monitor (hold or watch before shipping) |
-| high | ≥ 99.2 | Refund |
+| low | < 95.0 | Approve |
+| medium | 95.0 – 99.3 | Monitor (hold or watch before shipping) |
+| high | ≥ 99.3 | Refund |
 
 The agent only proposes. `PayGuardAgent.execute()` refuses to act without
 `seller_confirmed=True`. In the UI, Approve and Monitor are recorded locally;
@@ -152,7 +159,7 @@ the score, the proposal and the PayPal refund id.
 
 ## Risk model
 
-The trained model ships in `models/` (`payguard_lgbm.txt`, ~0.2 MB, plus
+The trained model ships in `models/` (`payguard_lgbm.txt`, ~0.05 MB, plus
 `model_meta.json` with thresholds and metrics), so the app runs without the
 dataset. To retrain:
 
@@ -169,7 +176,7 @@ payment history:
 | `amount_ratio` | amount / median payment over the previous 24 h (scale-free) |
 | `payer_txn_24h` | payments by the same payer in the previous 24 h |
 | `payer_is_new` | 1 if the payer has never paid before |
-| `country` | payer country (simulated for training, see below) |
+| `cross_border` | 1 if the payer's country differs from the seller's (simulated for training, see below) |
 
 The hour of day is deliberately **not** a feature (see limitations).
 
@@ -178,8 +185,8 @@ ratio, with payer velocity, and for a new payer.
 
 **Risk score (0–100)** is the percentile of the model's fraud probability among
 the validation payments: 97 means "riskier than 97% of reference payments".
-Thresholds: **monitor ≥ 95.7** (top 5% of validation payments, a review budget)
-and **refund ≥ 99.2** (the threshold that maximises F1 on validation).
+Thresholds: **monitor ≥ 95.0** (top 5% of validation payments, a review budget)
+and **refund ≥ 99.3** (the threshold that maximises F1 on validation).
 
 **Evaluation**: temporal split on PaySim's hourly `step`. Validation is used
 only for early stopping and thresholds; the numbers below are on the test window.
@@ -190,15 +197,17 @@ only for early stopping and thresholds; the numbers below are on the test window
 | validation | 401–550 | 158,652 | 1,588 |
 | test | 551–743 | 82,221 | 2,148 |
 
-| Test metric | With `country` | Without `country` |
+| Test metric | With `cross_border` | Without `cross_border` |
 |---|---|---|
-| PR-AUC (baseline = prevalence 0.026) | **0.265** | 0.163 |
-| Precision / recall / F1 at refund threshold | 0.49 / 0.22 / 0.30 | 0.42 / 0.15 / 0.22 |
-| Precision / recall / F1 at monitor threshold | 0.23 / 0.43 / 0.30 | 0.18 / 0.36 / 0.24 |
+| PR-AUC (baseline = prevalence 0.026) | **0.213** | 0.163 |
+| Precision / recall / F1 at refund threshold | 0.46 / 0.19 / 0.27 | 0.42 / 0.15 / 0.22 |
+| Precision / recall / F1 at monitor threshold | 0.21 / 0.37 / 0.27 | 0.18 / 0.36 / 0.24 |
 
-These numbers are modest. A model that also used the hour of day reached
-0.441 PR-AUC, but most of that came from a simulator artifact and made scores
-depend on when the app was opened, so it was dropped.
+These numbers are modest, and two earlier versions scored higher on paper.
+One used the hour of day (0.441 PR-AUC), which was mostly a simulator artifact
+and made scores depend on when the app was opened. The other used a
+per-country variable (0.265), whose extra gain came only from assumed
+per-country fraud rates. Both were dropped.
 
 Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
 
@@ -216,16 +225,21 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
 - **Amounts are relative.** PaySim amounts use an unspecified currency at a
   different scale from a typical PayPal checkout, so the model only sees the
   amount relative to the recent median ticket.
-- **Country is simulated.** PaySim has no geography. Each training transaction
-  gets a payer country drawn at random (fixed seed) from two distributions for
-  a US seller: legitimate payments are 80% domestic; fraudulent ones are 50%
-  domestic and more often from a few higher-risk countries. The shares are
-  **assumptions** (see `COUNTRY_PROBS` in `payguard/features.py`), loosely based
-  on the common observation that cross-border payments carry more fraud. They
-  are **not measured data**. What the model learns about countries reflects these
-  assumptions, which is why the table above also shows metrics without
-  `country`: it adds about +0.10 PR-AUC, and that gain is synthetic by
-  construction.
+- **Country is a cross-border signal, not a judgment on nationality.** The
+  model only knows whether the payer's country differs from the seller's; every
+  foreign country is treated the same, and a foreign buyer with a normal basket
+  stays low risk. A payment is flagged when cross-border meets an abnormal
+  amount, and the seller always makes the final decision. The app shows the
+  country for the seller's information, but the model never sees which
+  country it is.
+- **Cross-border is simulated.** PaySim has no geography. Each training
+  transaction is marked cross-border at random (fixed seed): 20% of legitimate
+  payments and 50% of fraudulent ones, for a US seller. These shares are
+  **assumptions** (see `CROSS_BORDER_SHARE` in `payguard/features.py`), loosely
+  based on the common observation that cross-border payments carry more fraud.
+  They are **not measured data**, which is why the table above also shows
+  metrics without `cross_border`: it adds about +0.05 PR-AUC, and that gain is
+  synthetic by construction. A payer with no known country counts as domestic.
 - **Payer history carries no signal in PaySim.** Payers almost never repeat
   (at most 3 transactions per payer; 460 training rows have a payment in the
   previous 24 h). The model therefore does not use `payer_txn_24h` and
@@ -239,7 +253,7 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   night UTC, which is wrong for a seller reviewing payments at any hour. The
   feature was removed: test PR-AUC dropped from 0.441 to 0.265, and scores no
   longer depend on the time of day. The model now effectively relies on two
-  signals, the relative amount and the (simulated) country.
+  signals, the relative amount and the (simulated) cross-border flag.
 - **Drift.** PaySim's legitimate volume drops sharply after step ~400, so fraud
   prevalence goes from 0.18% (train) to 2.6% (test). That is why the score is a
   percentile, not a raw probability.

@@ -133,7 +133,7 @@ with st.sidebar:
 
     st.markdown("#### Demo")
     if st.button("⚡ Simulate payments", use_container_width=True, disabled=paypal is None,
-                 help="Creates 8 real PayPal sandbox payments: 4 regular buyers, 4 new foreign buyers"):
+                 help="Creates 10 real PayPal sandbox payments: 6 ordinary (incl. 2 foreign), 4 unusually large foreign orders"):
         bar = st.progress(0.0, text="Creating sandbox payments…")
         try:
             ids = simulate_payments(paypal, ledger,

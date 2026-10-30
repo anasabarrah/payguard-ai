@@ -6,7 +6,8 @@ used, so the model trained on PaySim can score sandbox payments:
     amount_ratio    payment amount / median ticket over the previous 24h
     payer_txn_24h   payments by the same payer in the previous 24h
     payer_is_new    1 if the payer has never paid before
-    country         payer country (simulated for PaySim, see simulate_country)
+    cross_border    1 if the payer's country differs from the seller's
+                    (simulated for PaySim, see simulate_cross_border)
 
 Balances are deliberately excluded: a seller never sees the payer's balance.
 Hour of day is excluded too: in PaySim legitimate volume collapses at night
@@ -20,47 +21,29 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-FEATURES = ["amount_ratio", "payer_txn_24h", "payer_is_new", "country"]
-CATEGORICAL = ["country"]
+FEATURES = ["amount_ratio", "payer_txn_24h", "payer_is_new", "cross_border"]
 WINDOW_HOURS = 24
 SELLER_COUNTRY = "US"
 
-# Payer-country distributions for a US seller. PaySim has no geography, so the
-# country is simulated. The shares are assumptions, not measured data: most
-# legitimate buyers are domestic, while fraud is more often cross-border.
-# README "Data & limitations" explains this and reports metrics without it.
-COUNTRY_PROBS = {
-    #         legit   fraud
-    "US":    (0.80,   0.50),
-    "CA":    (0.05,   0.04),
-    "GB":    (0.04,   0.05),
-    "FR":    (0.02,   0.03),
-    "DE":    (0.02,   0.03),
-    "MX":    (0.02,   0.04),
-    "BR":    (0.01,   0.06),
-    "IN":    (0.01,   0.05),
-    "NG":    (0.005,  0.06),
-    "RO":    (0.005,  0.05),
-    "OTHER": (0.02,   0.09),
-}
-COUNTRIES = list(COUNTRY_PROBS)
+# PaySim has no geography, so whether a payment is cross-border is simulated.
+# The shares are assumptions, not measured data: 20% of legitimate payments and
+# 50% of fraudulent ones are cross-border for a US seller. Only "domestic vs
+# foreign" is modelled; every foreign country is treated the same, so the model
+# carries no assumption about any particular nationality.
+CROSS_BORDER_SHARE = {"legit": 0.20, "fraud": 0.50}
 
 
-def simulate_country(is_fraud: np.ndarray, seed: int = 42) -> np.ndarray:
+def simulate_cross_border(is_fraud: np.ndarray, seed: int = 42) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    legit_p = np.array([p[0] for p in COUNTRY_PROBS.values()])
-    fraud_p = np.array([p[1] for p in COUNTRY_PROBS.values()])
     is_fraud = np.asarray(is_fraud).astype(bool)
-    out = np.empty(len(is_fraud), dtype=object)
-    out[~is_fraud] = rng.choice(COUNTRIES, size=(~is_fraud).sum(), p=legit_p / legit_p.sum())
-    out[is_fraud] = rng.choice(COUNTRIES, size=is_fraud.sum(), p=fraud_p / fraud_p.sum())
-    return out
+    share = np.where(is_fraud, CROSS_BORDER_SHARE["fraud"], CROSS_BORDER_SHARE["legit"])
+    return (rng.random(len(is_fraud)) < share).astype(np.int8)
 
 
-def as_category(country: pd.Series) -> pd.Series:
-    c = country.fillna("OTHER").str.upper()
-    c = c.where(c.isin(COUNTRIES), "OTHER")
-    return pd.Categorical(c, categories=COUNTRIES)
+def is_cross_border(country: pd.Series) -> np.ndarray:
+    """1 for a known payer country other than the seller's; unknown counts as domestic."""
+    c = country.fillna("").astype(str).str.strip().str.upper()
+    return ((c != "") & (c != SELLER_COUNTRY)).astype(np.int8).to_numpy()
 
 
 # --- PaySim (training) --------------------------------------------------------
@@ -102,8 +85,7 @@ def build_paysim_features(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     med = med.fillna(df.loc[df["step"] == steps[0], "amount"].median())
     df["amount_ratio"] = df["amount"] / med
 
-    df["country"] = as_category(pd.Series(simulate_country(df["isFraud"].to_numpy(), seed),
-                                          index=df.index))
+    df["cross_border"] = simulate_cross_border(df["isFraud"].to_numpy(), seed)
     return df[FEATURES + ["step", "isFraud"]].reset_index(drop=True)
 
 
@@ -117,7 +99,7 @@ def features_from_payments(payments: list[dict] | pd.DataFrame) -> pd.DataFrame:
     """
     p = pd.DataFrame(payments).copy()
     if p.empty:
-        return pd.DataFrame(columns=FEATURES)
+        return pd.DataFrame(columns=FEATURES + ["payer_country"])
     p["_ts"] = pd.to_datetime(p["created_at"], utc=True, format="ISO8601")
     payer = p.get("payer_email")
     if payer is None:
@@ -138,10 +120,13 @@ def features_from_payments(payments: list[dict] | pd.DataFrame) -> pd.DataFrame:
         counts.append(int((same & (before["_ts"] >= row["_ts"] - window)).sum()))
         new.append(int(not same.any()))
 
+    country = p["country"] if "country" in p else pd.Series([None] * len(p), index=p.index)
     out = pd.DataFrame({
         "amount_ratio": ratios,
         "payer_txn_24h": counts,
         "payer_is_new": new,
-        "country": as_category(p["country"] if "country" in p else pd.Series([None] * len(p))),
+        "cross_border": is_cross_border(country),
     }, index=p.index)
-    return out[FEATURES]
+    # Kept next to the features for explanations only; the model never sees it.
+    out["payer_country"] = country.fillna("").astype(str).str.upper().to_numpy()
+    return out[FEATURES + ["payer_country"]]

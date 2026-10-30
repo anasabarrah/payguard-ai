@@ -28,7 +28,7 @@ def agent(tmp_path, model):
         led.record_capture(_order(i, 30.0, f"2026-10-30T{h:02d}:00:00Z"),
                            payer_email=f"buyer{i}@x.com", country="US")
     led.record_capture(_order(9, 900.0, "2026-10-30T14:00:00Z"),
-                       payer_email="new@z.ng", country="NG")
+                       payer_email="new@z.de", country="DE")
     paypal = MagicMock()
     paypal.refund_capture.return_value = {"id": "REF1", "status": "COMPLETED",
                                           "amount": {"currency_code": "USD", "value": "900.00"}}
@@ -88,12 +88,12 @@ def test_explanation_is_cached(agent, monkeypatch):
 
 def test_simulator_records_profiles(tmp_path):
     plan = demo_plan(random.Random(0))
-    assert len(plan) == 8 and {b.country for b, _, _ in plan[4:]} >= {"NG", "RO", "BR"}
+    assert len(plan) == 10 and {b.country for b, _, _ in plan[6:]} == {"DE", "JP", "AU", "IN"}
     client = MagicMock()
     client.create_order.side_effect = [_order(i, a, f"2026-10-30T12:00:{i:02d}Z")
                                        for i, (_, a, _) in enumerate(plan)]
     led = Ledger(tmp_path / "s.db")
     ids = simulate_payments(client, led, seed=0)
-    assert len(ids) == 8 and led.get(ids[4])["country"] == plan[4][0].country
-    card = client.create_order.call_args_list[4].kwargs["payment_source"]["card"]
-    assert card["billing_address"]["country_code"] == plan[4][0].country
+    assert len(ids) == 10 and led.get(ids[6])["country"] == plan[6][0].country
+    card = client.create_order.call_args_list[6].kwargs["payment_source"]["card"]
+    assert card["billing_address"]["country_code"] == plan[6][0].country
