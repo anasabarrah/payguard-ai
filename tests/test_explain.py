@@ -13,12 +13,13 @@ from payguard.risk import RiskModel
 REASONS = [
     Reason("amount_ratio", 22.5, 2.9, describe("amount_ratio", 22.5)),
     Reason("country", "NG", 2.8, describe("country", "NG")),
-    Reason("hour", 11, -0.3, describe("hour", 11)),
+    Reason("payer_is_new", 0, -0.3, describe("payer_is_new", 0)),
 ]
 
 
 def test_numbers_in_reads_digits_and_words():
     assert numbers_in("12.5x, twenty and 1,000 at 04:00") == {12.5, 20.0, 1000.0, 4.0, 0.0}
+    assert numbers_in("the payer has paid before") == set()
 
 
 def test_grounding():
@@ -48,7 +49,7 @@ def test_invented_number_falls_back_to_template(monkeypatch):
     e = explain(99.4, "high", REASONS)
     assert e.source == "template" and post.call_count == 2  # one retry, then template
     assert is_grounded(e.sentence, 99.4, REASONS)
-    assert "22.5x" in e.sentence and "NG" in e.sentence and "11:00" not in e.sentence
+    assert "22.5x" in e.sentence and "NG" in e.sentence and "paid before" not in e.sentence
 
 
 def test_no_key_or_api_error_falls_back(monkeypatch):
@@ -79,6 +80,6 @@ def test_top_reasons_match_shap(model):
     contrib = model.booster.predict(f, pred_contrib=True)
     assert np.allclose(contrib.sum(1), model.booster.predict(f, raw_score=True))
     reasons = top_reasons(model, f)[-1]
-    assert len(reasons) == 3
+    assert 1 <= len(reasons) <= 3 and all(r.shap != 0 for r in reasons)
     assert {r.feature for r in reasons[:2]} == {"amount_ratio", "country"}
     assert all(r.raises_risk for r in reasons[:2])

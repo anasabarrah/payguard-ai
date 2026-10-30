@@ -133,7 +133,7 @@ with st.sidebar:
 
     st.markdown("#### Demo")
     if st.button("⚡ Simulate payments", use_container_width=True, disabled=paypal is None,
-                 help="Creates 8 real PayPal sandbox payments: 4 regular buyers, 4 suspicious"):
+                 help="Creates 8 real PayPal sandbox payments: 4 regular buyers, 4 new foreign buyers"):
         bar = st.progress(0.0, text="Creating sandbox payments…")
         try:
             ids = simulate_payments(paypal, ledger,
@@ -311,7 +311,7 @@ with right:
                    "model's reasons" if exp.source == "llm"
                    else "📝 Template explanation (LLM unavailable or not grounded)")
 
-        st.markdown('<div class="pg-section">Top 3 reasons (SHAP)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="pg-section">Top reasons (SHAP)</div>', unsafe_allow_html=True)
         biggest = max(abs(r.shap) for r in alert.reasons) or 1
         rows_html = ""
         for r in alert.reasons:

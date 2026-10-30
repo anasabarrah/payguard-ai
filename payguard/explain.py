@@ -56,8 +56,6 @@ def describe(feature: str, value) -> str:
         if value == "OTHER":
             return "The payer is in a less common country"
         return f"The payer is in {value}, a cross-border payment"
-    if feature == "hour":
-        return f"The payment was made at {int(value):02d}:00 UTC"
     raise ValueError(feature)
 
 
@@ -66,13 +64,15 @@ def top_reasons(model: RiskModel, features: pd.DataFrame, k: int = 3) -> list[li
 
     If fewer than k features raise the risk, the remaining slots go to the
     features that lowered it the most, so a low score is explained too.
+    Features with no effect on this score are never listed as reasons, so a
+    row can have fewer than k reasons.
     """
     contrib = model.booster.predict(features[FEATURES], pred_contrib=True)[:, :-1]
     out = []
     for i, row in enumerate(contrib):
         order = sorted(range(len(FEATURES)), key=lambda j: row[j], reverse=True)
         up = [j for j in order if row[j] > 0][:k]
-        down = sorted((j for j in order if row[j] <= 0), key=lambda j: row[j])[: k - len(up)]
+        down = sorted((j for j in order if row[j] < 0), key=lambda j: row[j])[: k - len(up)]
         out.append([Reason(FEATURES[j], _plain(features.iloc[i][FEATURES[j]]), float(row[j]),
                            describe(FEATURES[j], _plain(features.iloc[i][FEATURES[j]])))
                     for j in up + down])

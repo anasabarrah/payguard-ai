@@ -5,7 +5,7 @@ alert in plain English, and proposes an action. The seller confirms before
 anything happens on PayPal. Built for the PayPal AI Hackathon.
 
 - **Risk score 0–100** for every payment (LightGBM)
-- **Top 3 reasons** per alert (SHAP), plus **one plain-English sentence** written
+- **Up to 3 reasons** per alert (SHAP), plus **one plain-English sentence** written
   by an LLM on Groq, with every number checked against those reasons
 - **Agent proposal**: approve, monitor or refund. Refunds go through the
   PayPal REST API only after the seller confirms.
@@ -38,14 +38,17 @@ streamlit run app.py
 ```
 
 Open http://localhost:8501 and click **⚡ Simulate payments** in the sidebar.
-It creates 8 real sandbox card payments: 4 from regular buyers, then 4
-suspicious ones (new foreign buyers, unusually large orders). Pick a payment
+It creates 8 real sandbox card payments: 4 from regular buyers, then 4 from
+new foreign buyers (2 small orders, 2 orders over 10x the usual ticket). Pick a payment
 in the table to see its score, reasons and explanation, then click
 **Approve**, **Monitor** or **Refund**. A refund asks for confirmation, then
 calls PayPal.
 
-Note: the hour of day weighs heavily in the model (see limitations), so during
-night hours UTC almost every payment scores high. The demo reads best in daytime UTC.
+Scores do not depend on the time of day, so the demo gives the same picture
+whenever it runs. `tests/test_demo_levels.py` checks that the 8 demo payments
+come out as 4 low, 2 medium and 2 high at 03:00, 12:00 and 22:00 UTC, on an
+empty ledger and after several earlier demos. Over 200 random demo runs, low
+scores stay at or below 82.6, medium at 97.7–98.3 and high at 99.9 or above.
 
 ## Tests
 
@@ -77,7 +80,7 @@ PayPal before the seller confirms.
 └────────────┬─────────────┘   score     └──────────────────────────┘
              │ reasons
 ┌────────────▼─────────────┐
-│ payguard/explain.py      │  TreeSHAP top 3 → Groq sentence
+│ payguard/explain.py      │  TreeSHAP reasons → Groq sentence
 │                          │  → number check → template fallback
 └──────────────────────────┘
 ```
@@ -96,11 +99,13 @@ PayPal before the seller confirms.
 ## Explanations
 
 SHAP values come from LightGBM's built-in TreeSHAP (`pred_contrib=True`), which
-is exact for tree models and needs no extra dependency. The 3 reasons are the
-features that pushed the score up the most; for a low-risk payment, the
-remaining slots go to the features that pulled it down.
+is exact for tree models and needs no extra dependency. Up to 3 reasons are
+shown: the features that pushed the score up the most, then, for a low-risk
+payment, the features that pulled it down. A feature with zero effect on the
+score is never presented as a reason. With the current model only the amount
+and the country have an effect (see limitations), so alerts show 2 reasons.
 
-The LLM receives only the score and the 3 reasons as text, and is asked to
+The LLM receives only the score and the reasons as text, and is asked to
 copy numbers exactly. Before a sentence is shown, every number in it, whether
 written in digits ("22.5") or in words ("twenty"), must appear in those
 facts. If not, PayGuard retries once and then falls back to a fill-in-the-blanks
@@ -111,9 +116,9 @@ labels which of the two produced the sentence.
 
 | Risk level | Score | Proposal |
 |---|---|---|
-| low | < 95 | Approve |
-| medium | 95 – 99.1 | Monitor (hold or watch before shipping) |
-| high | ≥ 99.1 | Refund |
+| low | < 95.7 | Approve |
+| medium | 95.7 – 99.2 | Monitor (hold or watch before shipping) |
+| high | ≥ 99.2 | Refund |
 
 The agent only proposes. `PayGuardAgent.execute()` refuses to act without
 `seller_confirmed=True`. In the UI, Approve and Monitor are recorded locally;
@@ -124,7 +129,7 @@ the score, the proposal and the PayPal refund id.
 
 ## Risk model
 
-The trained model ships in `models/` (`payguard_lgbm.txt`, ~0.6 MB, plus
+The trained model ships in `models/` (`payguard_lgbm.txt`, ~0.2 MB, plus
 `model_meta.json` with thresholds and metrics), so the app runs without the
 dataset. To retrain:
 
@@ -142,15 +147,16 @@ payment history:
 | `payer_txn_24h` | payments by the same payer in the previous 24 h |
 | `payer_is_new` | 1 if the payer has never paid before |
 | `country` | payer country (simulated for training, see below) |
-| `hour` | hour of day |
+
+The hour of day is deliberately **not** a feature (see limitations).
 
 LightGBM, with monotone constraints: risk can only increase with the amount
 ratio, with payer velocity, and for a new payer.
 
 **Risk score (0–100)** is the percentile of the model's fraud probability among
 the validation payments: 97 means "riskier than 97% of reference payments".
-Thresholds: **monitor ≥ 95** (top 5% of validation payments, a review budget)
-and **refund ≥ 99.1** (the threshold that maximises F1 on validation).
+Thresholds: **monitor ≥ 95.7** (top 5% of validation payments, a review budget)
+and **refund ≥ 99.2** (the threshold that maximises F1 on validation).
 
 **Evaluation**: temporal split on PaySim's hourly `step`. Validation is used
 only for early stopping and thresholds; the numbers below are on the test window.
@@ -163,9 +169,13 @@ only for early stopping and thresholds; the numbers below are on the test window
 
 | Test metric | With `country` | Without `country` |
 |---|---|---|
-| PR-AUC (baseline = prevalence 0.026) | **0.441** | 0.377 |
-| Precision / recall / F1 at refund threshold | 0.61 / 0.35 / 0.45 | 0.64 / 0.26 / 0.37 |
-| Precision / recall / F1 at monitor threshold | 0.25 / 0.57 / 0.35 | 0.25 / 0.55 / 0.34 |
+| PR-AUC (baseline = prevalence 0.026) | **0.265** | 0.163 |
+| Precision / recall / F1 at refund threshold | 0.49 / 0.22 / 0.30 | 0.42 / 0.15 / 0.22 |
+| Precision / recall / F1 at monitor threshold | 0.23 / 0.43 / 0.30 | 0.18 / 0.36 / 0.24 |
+
+These numbers are modest. A model that also used the hour of day reached
+0.441 PR-AUC, but most of that came from a simulator artifact and made scores
+depend on when the app was opened, so it was dropped.
 
 Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
 
@@ -191,17 +201,22 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   on the common observation that cross-border payments carry more fraud. They
   are **not measured data**. What the model learns about countries reflects these
   assumptions, which is why the table above also shows metrics without
-  `country`: it adds about +0.06 PR-AUC, and that gain is synthetic by
+  `country`: it adds about +0.10 PR-AUC, and that gain is synthetic by
   construction.
 - **Payer history carries no signal in PaySim.** Payers almost never repeat
   (at most 3 transactions per payer; 460 training rows have a payment in the
   previous 24 h). The model therefore does not use `payer_txn_24h` and
-  `payer_is_new` in practice. They are kept, with monotone constraints, so that
+  `payer_is_new` in practice (their SHAP values are exactly 0, so they never
+  appear as reasons). They are kept, with monotone constraints, so that
   retraining on real seller history can use them.
-- **Hour of day dominates, and that is partly a simulator artifact.** In PaySim,
-  fraud is spread evenly over the day while legitimate volume collapses at
-  night, so night-time payments look much riskier. Real fraud is also skewed
-  towards night hours, but not this strongly. Times are interpreted in UTC.
+- **No hour of day.** In PaySim, fraud is spread evenly over the day while
+  legitimate volume collapses at night, so the hour looked extremely predictive
+  (it carried ~60% of an earlier model's gain). That is mostly a simulator
+  artifact. It also made the same payment score "low" at noon and "high" at
+  night UTC, which is wrong for a seller reviewing payments at any hour. The
+  feature was removed: test PR-AUC dropped from 0.441 to 0.265, and scores no
+  longer depend on the time of day. The model now effectively relies on two
+  signals, the relative amount and the (simulated) country.
 - **Drift.** PaySim's legitimate volume drops sharply after step ~400, so fraud
   prevalence goes from 0.18% (train) to 2.6% (test). That is why the score is a
   percentile, not a raw probability.

@@ -7,9 +7,11 @@ used, so the model trained on PaySim can score sandbox payments:
     payer_txn_24h   payments by the same payer in the previous 24h
     payer_is_new    1 if the payer has never paid before
     country         payer country (simulated for PaySim, see simulate_country)
-    hour            hour of day (0-23)
 
 Balances are deliberately excluded: a seller never sees the payer's balance.
+Hour of day is excluded too: in PaySim legitimate volume collapses at night
+while fraud does not, so the hour mostly encoded a simulator artifact and made
+the same payment score differently depending on when it was reviewed.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-FEATURES = ["amount_ratio", "payer_txn_24h", "payer_is_new", "country", "hour"]
+FEATURES = ["amount_ratio", "payer_txn_24h", "payer_is_new", "country"]
 CATEGORICAL = ["country"]
 WINDOW_HOURS = 24
 SELLER_COUNTRY = "US"
@@ -100,7 +102,6 @@ def build_paysim_features(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     med = med.fillna(df.loc[df["step"] == steps[0], "amount"].median())
     df["amount_ratio"] = df["amount"] / med
 
-    df["hour"] = (df["step"] % 24).astype(np.int8)
     df["country"] = as_category(pd.Series(simulate_country(df["isFraud"].to_numpy(), seed),
                                           index=df.index))
     return df[FEATURES + ["step", "isFraud"]].reset_index(drop=True)
@@ -108,8 +109,7 @@ def build_paysim_features(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
 
 # --- PayPal ledger (inference) ------------------------------------------------
 
-def features_from_payments(payments: list[dict] | pd.DataFrame,
-                           tz: str = "UTC") -> pd.DataFrame:
+def features_from_payments(payments: list[dict] | pd.DataFrame) -> pd.DataFrame:
     """Compute FEATURES for each payment from the seller's own history.
 
     payments need: created_at (ISO time), amount, and payer_email or payer_id;
@@ -118,8 +118,7 @@ def features_from_payments(payments: list[dict] | pd.DataFrame,
     p = pd.DataFrame(payments).copy()
     if p.empty:
         return pd.DataFrame(columns=FEATURES)
-    ts = pd.to_datetime(p["created_at"], utc=True, format="ISO8601")
-    p["_ts"] = ts.dt.tz_convert(tz)
+    p["_ts"] = pd.to_datetime(p["created_at"], utc=True, format="ISO8601")
     payer = p.get("payer_email")
     if payer is None:
         payer = pd.Series([None] * len(p), index=p.index)
@@ -144,6 +143,5 @@ def features_from_payments(payments: list[dict] | pd.DataFrame,
         "payer_txn_24h": counts,
         "payer_is_new": new,
         "country": as_category(p["country"] if "country" in p else pd.Series([None] * len(p))),
-        "hour": p["_ts"].dt.hour.to_numpy(),
     }, index=p.index)
     return out[FEATURES]

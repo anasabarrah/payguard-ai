@@ -46,7 +46,6 @@ def test_features_from_payments():
     assert f.payer_txn_24h.tolist() == [0, 1, 0]
     assert f.amount_ratio.tolist() == pytest.approx([1.0, 3.0, 10.0])  # 200 / median(10, 30)
     assert f.country.tolist() == ["US", "US", "OTHER"]
-    assert f.hour.tolist() == [10, 11, 12]
 
 
 def test_to_score_is_monotonic_and_bounded():

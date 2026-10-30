@@ -41,19 +41,24 @@ REGULARS = [
 
 
 def demo_plan(rng: random.Random) -> list[tuple[Buyer, float, str]]:
-    """Ordinary payments first (they set the usual ticket), then suspicious ones."""
-    plan = [(b, round(rng.uniform(18, 65), 2), "regular customer")
+    """Ordinary payments first (they set the usual ticket), then suspicious ones.
+
+    Expected levels with the shipped model: 4 low (regular buyers), 2 medium
+    (new foreign buyers, small orders), 2 high (new foreign buyers, orders
+    10x+ the usual ticket). Scores do not depend on the time of day.
+    """
+    plan = [(b, round(rng.uniform(25, 65), 2), "regular customer")
             for b in rng.sample(REGULARS, 4)]
     tag = rng.randint(100, 999)
     plan += [
+        (Buyer("M. Popescu", f"m.popescu{tag}@example.ro", "RO"),
+         round(rng.uniform(25, 45), 2), "new foreign buyer, small order"),
+        (Buyer("C. Okafor", f"c.okafor{tag}@example.ng", "NG"),
+         round(rng.uniform(25, 45), 2), "new foreign buyer, small order"),
         (Buyer("K. Adeyemi", f"k.adeyemi{tag}@example.ng", "NG"),
          round(rng.uniform(800, 1200), 2), "new foreign buyer, very large order"),
-        (Buyer("M. Popescu", f"m.popescu{tag}@example.ro", "RO"),
-         round(rng.uniform(35, 60), 2), "new foreign buyer"),
-        (Buyer("J. Doe", f"jdoe{tag}@example.com", "US"),
-         round(rng.uniform(900, 1500), 2), "new buyer, unusually large order"),
         (Buyer("R. Silva", f"r.silva{tag}@example.com.br", "BR"),
-         round(rng.uniform(500, 800), 2), "new foreign buyer, large order"),
+         round(rng.uniform(600, 900), 2), "new foreign buyer, large order"),
     ]
     return plan
 
