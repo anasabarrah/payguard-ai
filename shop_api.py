@@ -139,8 +139,29 @@ async def paypal_webhook(request: Request):
     if not valid:
         return JSONResponse({"detail": "Invalid PayPal webhook signature"}, status_code=400)
     if event.get("event_type") in {"PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.REFUNDED"}:
-        await run_in_threadpool(ledger().record_webhook, event)
+        await run_in_threadpool(_apply_event, event)
     return JSONResponse({"received": True})
+
+
+def _apply_event(event: dict) -> None:
+    led = ledger()
+    if not led.record_webhook(event) or event["event_type"] != "PAYMENT.CAPTURE.COMPLETED":
+        return
+    # A capture PayGuard did not make itself (e.g. its shop capture call never returned):
+    # the event has no payer, so fetch the order for the payer's email and country.
+    capture_id = (event.get("resource") or {}).get("id")
+    row = led.get(capture_id) if capture_id else None
+    if row and not row["payer_email"] and row["order_id"] != "UNKNOWN":
+        try:
+            order = paypal().get_order(row["order_id"])
+        except PayPalError:
+            return
+        captures = [c for u in order.get("purchase_units", [])
+                    for c in (u.get("payments") or {}).get("captures", [])]
+        if any(c.get("id") == capture_id for c in captures):
+            payer = order.get("payer") or {}
+            led.record_capture({"id": order["id"], "purchase_units": [{"payments": {
+                "captures": [c for c in captures if c["id"] == capture_id]}}], "payer": payer})
 
 
 async def shop_redirect(request):

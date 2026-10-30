@@ -59,7 +59,7 @@ class PayPalClient:
         self._token_expiry = time.time() + int(data.get("expires_in", 0))
         return self._token
 
-    def _request(self, method: str, path: str, *, json: dict | None = None,
+    def _request(self, method: str, path: str, *, json: dict | list | None = None,
                  data: str | None = None, params: dict | None = None, idempotent: bool = False,
                  headers: dict | None = None) -> dict:
         h = {
@@ -141,6 +141,11 @@ class PayPalClient:
         return self._request("POST", "/v1/notifications/webhooks", json={
             "url": url, "event_types": [{"name": name} for name in events],
         }, idempotent=True)
+
+    def set_webhook_events(self, webhook_id: str, events: list[str]) -> dict:
+        return self._request("PATCH", f"/v1/notifications/webhooks/{webhook_id}", json=[{
+            "op": "replace", "path": "/event_types", "value": [{"name": n} for n in events],
+        }])
 
     # --- reporting --------------------------------------------------------
     def can_search_transactions(self) -> bool:

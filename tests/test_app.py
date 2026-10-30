@@ -79,3 +79,21 @@ def test_cancel_refund_closes_dialog(app):
     assert not app.exception and "refund_for" not in app.session_state
     assert not any(b.label == "Yes, refund" for b in app.button)
     app.client.refund_capture.assert_not_called()
+
+
+def test_new_payments_are_announced(app):
+    _clear_caches()
+    app.session_state["announce"] = 1
+    app.run()
+    assert not app.exception
+    assert any("New PayPal payment: $900.00" in t.value for t in app.toast)
+    assert any("Live" in m.value for m in app.markdown)
+
+
+def test_webhook_badge_on_verified_payment(app):
+    Ledger().record_webhook({"id": "EV-1", "event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {
+        "id": "CAP9", "amount": {"value": "900.00", "currency_code": "USD"}}})
+    _clear_caches()
+    app.run()
+    assert not app.exception
+    assert any("✓ PayPal webhook" in m.value for m in app.markdown)

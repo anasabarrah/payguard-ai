@@ -56,6 +56,7 @@ EXTRA_COLUMNS = {
     "explanation": "TEXT",         # cached sentence for explained_score
     "explanation_source": "TEXT",
     "explained_score": "REAL",
+    "webhook_verified_at": "TEXT",  # when PayPal confirmed the capture by a verified webhook
 }
 
 
@@ -116,12 +117,15 @@ class Ledger:
                 amount = resource.get("amount") or {}
                 if capture_id and amount.get("value") and amount.get("currency_code"):
                     order_id = ((resource.get("supplementary_data") or {}).get("related_ids") or {}).get("order_id") or "UNKNOWN"
+                    now = datetime.now(timezone.utc).isoformat()
                     self.conn.execute(
                         "INSERT OR IGNORE INTO payments (capture_id,order_id,created_at,amount,currency,status,raw)"
                         " VALUES (?,?,?,?,?,?,?)",
-                        (capture_id, order_id, resource.get("create_time") or datetime.now(timezone.utc).isoformat(),
+                        (capture_id, order_id, resource.get("create_time") or now,
                          float(amount["value"]), amount["currency_code"], resource.get("status", "COMPLETED"),
                          json.dumps(event)))
+                    self.conn.execute("UPDATE payments SET webhook_verified_at = ? WHERE capture_id = ?",
+                                      (now, capture_id))
             else:
                 amount = resource.get("amount") or {}
                 related = ((resource.get("supplementary_data") or {}).get("related_ids") or {})
@@ -157,6 +161,13 @@ class Ledger:
             " WHERE capture_id = ?",
             (value, value, capture_id),
         )
+
+    def version(self) -> tuple:
+        """Cheap fingerprint of the ledger; it changes whenever a payment, refund or decision does."""
+        row = self.conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(refunded), 0), COUNT(decision), COUNT(webhook_verified_at),"
+            " (SELECT COUNT(*) FROM decisions) FROM payments").fetchone()
+        return tuple(row)
 
     def list_payments(self) -> list[dict]:
         rows = self.conn.execute(

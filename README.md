@@ -76,8 +76,10 @@ routes from `shop_api.py`: `/shop/`, `/api/shop/...` and `/webhooks/paypal`.
 PayPal calls in those routes run in worker threads, so a slow PayPal response
 never blocks the dashboard. This fits one free Render web service.
 
-Register the sandbox webhook after deploying, using the same PayPal sandbox
-app credentials configured in Render:
+### Real-time PayPal webhooks
+
+Register the sandbox webhook once, after deploying, with the same sandbox app
+credentials as Render:
 
 ```bash
 PAYGUARD_PUBLIC_URL=https://payguard-ai-1p86.onrender.com \
@@ -85,12 +87,28 @@ PAYGUARD_PUBLIC_URL=https://payguard-ai-1p86.onrender.com \
 ```
 
 The script subscribes `PAYMENT.CAPTURE.COMPLETED` and
-`PAYMENT.CAPTURE.REFUNDED` and prints the webhook ID. Set that value as
-`PAYPAL_WEBHOOK_ID` in Render and redeploy. The listener verifies every event
-through PayPal's `verify-webhook-signature` API and deduplicates event IDs.
-Captures are added automatically; refund events update the ledger. A shop
-checkout also records the server capture response immediately, so it does not
-depend on webhook delivery. The dashboard reads the ledger on every rerun.
+`PAYMENT.CAPTURE.REFUNDED` on `<url>/webhooks/paypal` and prints the webhook
+ID (running it again reuses the same webhook). Put that ID in `.env` and in
+Render as `PAYPAL_WEBHOOK_ID`; it is never in the code.
+
+For every delivery, `/webhooks/paypal`:
+
+1. refuses the event if `PAYPAL_WEBHOOK_ID` is not set (503) or the body is not JSON (400);
+2. sends the PayPal transmission headers and the **raw** body to PayPal's
+   `verify-webhook-signature` API, and refuses the event (400) unless PayPal
+   answers `SUCCESS`, or (502) if PayPal cannot be reached;
+3. stores the event id, so a redelivered event is applied once;
+4. **capture completed**: adds the payment to the ledger if PayGuard did not
+   make it itself (fetching the order for the payer's email and country), and
+   marks it **✓ PayPal webhook** in the dashboard;
+5. **capture refunded**: adds the refund once per PayPal refund id (a refund
+   made from the dashboard is not counted twice). A full refund made directly
+   in PayPal is logged as a refund decision, so it leaves the review queue.
+
+The dashboard polls a fingerprint of the ledger every 3 seconds and reruns
+when it changes: a shop checkout or a webhook shows up with its score and a
+"New PayPal payment" notification, without clicking **Simulate payments** or
+reloading the page.
 
 ## Deploy on Render (free)
 

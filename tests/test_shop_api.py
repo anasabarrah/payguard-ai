@@ -193,3 +193,43 @@ def test_full_refund_made_in_paypal_leaves_the_queue(ledger):
     ledger.record_webhook(_refund_event("EV-R1", "REF-9", "79.00"))
     assert ledger.get("CAP-2")["decision"] == "refund"
     assert ledger.decisions("CAP-2")[0]["refund_id"] == "REF-9"
+
+
+def test_webhook_only_capture_is_enriched_from_the_order(http, paypal, ledger, monkeypatch):
+    monkeypatch.setenv("PAYPAL_WEBHOOK_ID", "WH-1")
+    paypal.verify_webhook_signature.return_value = True
+    paypal.get_order.return_value = _captured(payer={
+        "email_address": "buyer@example.com", "address": {"country_code": "GB"}})
+    http.post("/webhooks/paypal", content=json.dumps(_capture_event()), headers=SIGNED)
+    paypal.get_order.assert_called_once_with("ORDER-1")
+    row = ledger.get("CAP-1")
+    assert (row["payer_email"], row["country"]) == ("buyer@example.com", "GB")
+    assert row["webhook_verified_at"]
+
+
+def test_webhook_for_a_known_capture_only_marks_it_verified(http, paypal, ledger, monkeypatch):
+    monkeypatch.setenv("PAYPAL_WEBHOOK_ID", "WH-1")
+    paypal.verify_webhook_signature.return_value = True
+    ledger.record_capture(_captured(), payer_email="emma@example.com", country="US")
+    ledger.record_decision("CAP-1", "accept")
+    http.post("/webhooks/paypal", content=json.dumps(_capture_event()), headers=SIGNED)
+    paypal.get_order.assert_not_called()
+    row = ledger.get("CAP-1")
+    assert row["webhook_verified_at"] and row["decision"] == "accept"
+    assert row["payer_email"] == "emma@example.com"
+
+
+def test_ledger_version_changes_on_every_kind_of_update(ledger):
+    versions = [ledger.version()]
+    ledger.record_capture(_captured("ORDER-2", "CAP-2"))
+    versions.append(ledger.version())
+    ledger.record_webhook({**_capture_event("EV-9"), "resource": {
+        **_capture_event()["resource"], "id": "CAP-2"}})
+    versions.append(ledger.version())
+    ledger.record_decision("CAP-2", "monitor")
+    versions.append(ledger.version())
+    ledger.record_decision("CAP-2", "accept")
+    versions.append(ledger.version())
+    ledger.record_refund("CAP-2", {"id": "R", "amount": {"value": "5.00"}})
+    versions.append(ledger.version())
+    assert len(set(versions)) == len(versions)

@@ -34,6 +34,7 @@ DECISIONS = {
     "refund": ("Refunded", "#B42318"),
 }
 ACTION_LABELS = {"accept": "Approve", "monitor": "Monitor", "refund": "Refund"}
+LIVE_REFRESH_SECONDS = 3
 
 st.markdown("""
 <style>
@@ -48,6 +49,7 @@ html, body, [class*="css"], .stMarkdown, .stButton button { font-family: 'Inter'
 .pg-shop { margin-left:auto; padding:8px 16px; border-radius:999px; background:#003087;
   color:#fff !important; text-decoration:none !important; font-weight:600; font-size:0.9rem; }
 .pg-shop:hover { background:#0070E0; }
+.pg-live { color:#067647; font-size:0.82rem; font-weight:500; margin:-2px 0 10px 58px; }
 .pg-pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.78rem;
   font-weight:600; }
 .pg-card { background:#fff; border:1px solid #E4E7EC; border-radius:14px; padding:18px 20px;
@@ -175,6 +177,31 @@ st.markdown("""
 </div>""", unsafe_allow_html=True)
 
 alerts = agent.review()
+
+
+# --- live updates ---------------------------------------------------------------
+# Shop checkouts and verified PayPal webhooks write to the ledger from other
+# requests; poll its fingerprint and rerun the page when it changes.
+
+announce = st.session_state.pop("announce", 0)
+st.session_state["ledger_version"] = ledger.version()
+
+
+@st.fragment(run_every=LIVE_REFRESH_SECONDS)
+def live_updates():
+    seen, now = st.session_state.get("ledger_version"), ledger.version()
+    if seen is not None and now != seen:
+        st.session_state["announce"] = max(0, now[0] - seen[0])
+        st.rerun()
+    st.markdown('<div class="pg-live">● Live: shop payments and PayPal webhooks appear '
+                'here automatically</div>', unsafe_allow_html=True)
+
+
+live_updates()
+for a in alerts[:min(announce, 3)]:
+    st.toast(f"New PayPal payment: ${a.payment['amount']:,.2f} · score {a.score:.1f} "
+             f"({LEVELS[a.level]['label'].lower()} risk)", icon="💳")
+
 if not alerts:
     st.info("No payments yet. Click **⚡ Simulate payments** in the sidebar to create sandbox "
             "payments, or buy something in the [demo shop](/shop/) with a PayPal sandbox buyer "
@@ -299,7 +326,9 @@ with right:
             f'{when(p["created_at"])}</div>'
             f'<div class="pg-muted" style="font-size:.78rem">Capture {p["capture_id"]}</div>'
             f'<div style="margin-top:8px">{pill(lv["label"] + " risk", lv["fg"], lv["bg"])} '
-            f'{pill(status, status_color, "#F2F4F7")}</div>',
+            f'{pill(status, status_color, "#F2F4F7")} '
+            f'{pill("✓ PayPal webhook", "#175CD3", "#EFF8FF") if p.get("webhook_verified_at") else ""}'
+            f'</div>',
             unsafe_allow_html=True)
         top_r.markdown(
             f'<div class="pg-ring" style="background:conic-gradient({lv["ring"]} {pct}%, '
