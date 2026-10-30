@@ -45,6 +45,8 @@ def test_renders_and_defaults_to_riskiest(app):
     assert any("Template explanation" in c.value for c in app.caption)
     labels = [b.label for b in app.button]
     assert {"✅ Approve", "👁️ Monitor", "↩️ Refund", "⚡ Simulate payments"} <= set(labels)
+    shop = [b for b in app.get("link_button") if "Open demo shop" in b.proto.label]
+    assert shop and shop[0].proto.url == "/shop/"
 
 
 def test_refund_requires_confirmation(app):

@@ -1,9 +1,11 @@
 """PayPal sandbox demo shop and verified webhook receiver."""
 from __future__ import annotations
 
-import html
 import json
 import os
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from starlette.concurrency import run_in_threadpool
@@ -11,17 +13,29 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
+from payguard.agent import PayGuardAgent
 from payguard.ledger import Ledger
 from payguard.paypal_client import PayPalClient, PayPalError
+from payguard.risk import RiskModel
 
 load_dotenv()
 
+# The server's catalog is the only source of prices: the browser sends a SKU, never an amount.
 PRODUCTS = {
-    "starter": {"name": "Starter kit", "price": 24.00, "description": "PayGuard demo starter kit"},
-    "plus": {"name": "Plus bundle", "price": 79.00, "description": "PayGuard demo plus bundle"},
-    "pro": {"name": "Pro bundle", "price": 249.00, "description": "PayGuard demo pro bundle"},
+    "bottle": {"name": "Insulated bottle", "price": 24.00, "art": "bottle",
+               "blurb": "Keeps water cold for 24 hours. 750 ml, steel.",
+               "tint": "#e8f1fd", "ink": "#0070e0"},
+    "beanie": {"name": "Merino beanie", "price": 39.00, "art": "beanie",
+               "blurb": "Soft, warm, and it does not itch.",
+               "tint": "#fdf2e8", "ink": "#b54708"},
+    "pack": {"name": "Daypack 22 L", "price": 89.00, "art": "pack",
+             "blurb": "Light hiking pack with a laptop sleeve.",
+             "tint": "#e9f7ef", "ink": "#067647"},
+    "tent": {"name": "Two-person tent", "price": 249.00, "art": "tent",
+             "blurb": "1.6 kg, sets up in three minutes.",
+             "tint": "#f1ecfb", "ink": "#5925dc"},
 }
-PRODUCT_JSON = json.dumps(PRODUCTS)
+SHOP_HTML = (Path(__file__).resolve().parent / "templates" / "shop.html").read_text()
 
 
 def paypal() -> PayPalClient:
@@ -29,6 +43,11 @@ def paypal() -> PayPalClient:
         return PayPalClient()
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
+
+
+@lru_cache(maxsize=1)
+def risk_model() -> RiskModel:
+    return RiskModel.load()
 
 
 def ledger() -> Ledger:
@@ -45,26 +64,11 @@ async def read_json(request: Request) -> dict | None:
 
 
 async def shop(request):
-    client_id = html.escape(os.getenv("PAYPAL_CLIENT_ID", ""), quote=True)
-    cards = "".join(
-        f'<article><div class="emoji">{icon}</div><h2>{item["name"]}</h2>'
-        f'<p>Sandbox demo item · instant checkout</p><strong>${item["price"]:.2f} USD</strong>'
-        f'<div id="paypal-{sku}" class="buttons"></div></article>'
-        for (sku, item), icon in zip(PRODUCTS.items(), ["🛡️", "✨", "🚀"])
-    )
-    return HTMLResponse(f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-    <title>PayGuard Demo Shop</title><script src="https://www.paypal.com/sdk/js?client-id={client_id}&currency=USD&intent=capture"></script>
-    <style>*{{box-sizing:border-box}}body{{margin:0;background:#f4f7fc;color:#14243a;font:16px Inter,system-ui,sans-serif}}header{{background:linear-gradient(120deg,#003087,#0070e0);color:white;padding:42px 7%;}}header h1{{margin:0;font-size:2.4rem}}header p{{opacity:.86}}main{{max-width:1100px;margin:34px auto;padding:0 20px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:20px}}article{{background:white;border:1px solid #e2e9f3;border-radius:18px;padding:24px;box-shadow:0 8px 28px #002b5c0d}}.emoji{{font-size:35px}}article h2{{margin:12px 0 4px}}article p{{color:#65758b;min-height:24px}}article strong{{display:block;font-size:1.4rem;margin:18px 0}}.buttons{{min-height:46px}}.note{{color:#65758b;margin:25px 0}}a{{color:#0070e0}}</style></head>
-    <body><header><h1>🛡️ PayGuard Demo Shop</h1><p>Pay with your PayPal sandbox buyer account. Orders are captured securely and reviewed by PayGuard AI.</p></header>
-    <main><div class="grid">{cards}</div><p class="note">Sandbox only · after approval, the capture appears in <a href="/">the PayGuard dashboard</a> with its risk score.</p></main>
-    <script>
-    const products = {PRODUCT_JSON};
-    for (const [sku, product] of Object.entries(products)) paypal.Buttons({{
-      createOrder: async () => {{ const r = await fetch('/api/shop/orders', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{sku}})}}); const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Could not create order'); return d.id; }},
-      onApprove: async (data) => {{ const r = await fetch(`/api/shop/orders/${{data.orderID}}/capture`, {{method:'POST'}}); const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Capture failed'); alert(`Payment captured: $${{d.amount}} USD · Capture ${{d.capture_id}}`); }},
-      onError: e => alert('PayPal checkout error: '+e.message)
-    }}).render('#paypal-'+sku);
-    </script></body></html>''')
+    client_id = os.getenv("PAYPAL_CLIENT_ID", "")
+    catalog = json.dumps(PRODUCTS).replace("</", "<\\/")
+    page = (SHOP_HTML.replace("__PAYPAL_CLIENT_ID__", quote(client_id, safe=""))
+            .replace("__PRODUCTS_JSON__", catalog))
+    return HTMLResponse(page)
 
 
 async def products(request):
@@ -79,7 +83,7 @@ async def create_order(request: Request):
     item = PRODUCTS[sku]
     try:
         order = await run_in_threadpool(paypal().create_order, item["price"],
-                                        description=item["description"], custom_id=sku)
+                                        description=f"PayGuard Demo Shop: {item['name']}", custom_id=sku)
     except PayPalError:
         return JSONResponse({"detail": "PayPal could not create the order"}, status_code=502)
     return JSONResponse({"id": order["id"]})
@@ -105,11 +109,14 @@ def _capture(order_id: str) -> JSONResponse:
             captured = order
         else:
             captured = client.capture_order(order_id)
-        capture_id = ledger().record_capture(captured)
+        led = ledger()
+        capture_id = led.record_capture(captured)
         amount = captured["purchase_units"][0]["payments"]["captures"][0]["amount"]["value"]
-        return JSONResponse({"capture_id": capture_id, "amount": amount, "status": "COMPLETED"})
     except PayPalError:
         return JSONResponse({"detail": "PayPal could not capture the order"}, status_code=502)
+    alert = next(a for a in PayGuardAgent(led, risk_model()).review() if a.capture_id == capture_id)
+    return JSONResponse({"capture_id": capture_id, "amount": amount, "status": "COMPLETED",
+                         "score": alert.score, "level": alert.level})
 
 
 async def paypal_webhook(request: Request):

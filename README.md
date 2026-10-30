@@ -61,12 +61,13 @@ median ticket at the ordinary level when several people run the demo.
 
 ### PayPal checkout shop
 
-Open http://localhost:8501/shop/ (or click **Open the PayGuard Demo Shop** in
-the dashboard). Choose a fixed-price demo item and approve checkout with a
-PayPal **sandbox buyer** account. The JavaScript SDK renders the PayPal button;
-the app creates and captures the Orders v2 order server-side. The capture is
-written to the same ledger and appears in the dashboard on its next refresh,
-with a PayGuard score. The 6 low / 2 medium / 2 high **Simulate payments** demo
+Open http://localhost:8501/shop/ (or click **🛍️ Open demo shop** in the
+dashboard). The shop sells 4 fixed-price items. Click a PayPal button and
+approve with a PayPal **sandbox buyer** account. The JavaScript SDK renders the
+button; the server creates the Orders v2 order from its own catalog (the
+browser only sends a product id, never a price), checks the approved amount,
+captures it, stores it in the ledger and returns the PayGuard score, which the
+shop shows. **Open PayGuard dashboard** in the shop goes back to the seller view. The 6 low / 2 medium / 2 high **Simulate payments** demo
 is unchanged.
 
 Everything runs in **one process on one port**: `server.py` wraps the

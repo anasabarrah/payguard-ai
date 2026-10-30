@@ -27,9 +27,9 @@ def server(tmp_path_factory):
     base = f"http://127.0.0.1:{port}"
     for _ in range(120):
         try:
-            if requests.get(f"{base}/_stcore/health", timeout=1).ok:
+            if requests.get(f"{base}/_stcore/health", timeout=2).ok:
                 break
-        except requests.ConnectionError:
+        except requests.RequestException:
             pass
         time.sleep(0.5)
     else:

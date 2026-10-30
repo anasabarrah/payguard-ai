@@ -45,6 +45,9 @@ html, body, [class*="css"], .stMarkdown, .stButton button { font-family: 'Inter'
   justify-content:center; font-size:24px; background:linear-gradient(135deg,#003087,#0070E0); }
 .pg-title { font-size:1.75rem; font-weight:700; color:#003087; line-height:1.1; }
 .pg-sub { color:#667085; font-size:0.95rem; }
+.pg-shop { margin-left:auto; padding:8px 16px; border-radius:999px; background:#003087;
+  color:#fff !important; text-decoration:none !important; font-weight:600; font-size:0.9rem; }
+.pg-shop:hover { background:#0070E0; }
 .pg-pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.78rem;
   font-weight:600; }
 .pg-card { background:#fff; border:1px solid #E4E7EC; border-radius:14px; padding:18px 20px;
@@ -132,6 +135,8 @@ with st.sidebar:
         st.warning("No GROQ_API_KEY: explanations use a template", icon="📝")
 
     st.markdown("#### Demo")
+    st.link_button("🛍️ Open demo shop", "/shop/", use_container_width=True,
+                   help="Buy with a PayPal sandbox buyer account; the payment appears here")
     if st.button("⚡ Simulate payments", use_container_width=True, disabled=paypal is None,
                  help="Creates 10 real PayPal sandbox payments: 6 ordinary (incl. 2 foreign), 4 unusually large foreign orders"):
         bar = st.progress(0.0, text="Creating sandbox payments…")
@@ -166,13 +171,14 @@ st.markdown("""
   <div class="pg-logo">🛡️</div>
   <div><div class="pg-title">PayGuard AI</div>
   <div class="pg-sub">Fraud review for PayPal sellers · every alert explained · you decide</div></div>
+  <a class="pg-shop" href="/shop/" target="_blank">🛍️ Open demo shop</a>
 </div>""", unsafe_allow_html=True)
-st.markdown("[🛍️ Open the PayGuard Demo Shop](/shop/)")
 
 alerts = agent.review()
 if not alerts:
     st.info("No payments yet. Click **⚡ Simulate payments** in the sidebar to create sandbox "
-            "payments, or run `python scripts/paypal_smoke_test.py`.")
+            "payments, or buy something in the [demo shop](/shop/) with a PayPal sandbox buyer "
+            "account.")
     st.stop()
 
 pending = [a for a in alerts if a.pending]

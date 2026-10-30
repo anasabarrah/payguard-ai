@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PayGuard Demo Shop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://www.paypal.com/sdk/js?client-id=__PAYPAL_CLIENT_ID__&currency=USD&intent=capture&components=buttons"></script>
+<style>
+  :root { --navy:#003087; --blue:#0070e0; --ink:#1a2433; --muted:#667085; --line:#e4e7ec;
+          --bg:#f5f7fa; --ok:#067647; --okbg:#dcfae6; --warn:#b54708; --warnbg:#fef0c7;
+          --bad:#b42318; --badbg:#fee4e2; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:16px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color:var(--blue); }
+  .bar { background:#fff; border-bottom:1px solid var(--line); }
+  .bar-in { max-width:1120px; margin:0 auto; padding:14px 20px; display:flex; align-items:center;
+            justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:1.1rem; color:var(--navy); }
+  .logo { width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
+          background:linear-gradient(135deg,var(--navy),var(--blue)); color:#fff; }
+  .dash { display:inline-flex; align-items:center; gap:8px; padding:9px 16px; border-radius:999px;
+          background:var(--navy); color:#fff; text-decoration:none; font-weight:600; font-size:.92rem; }
+  .dash:hover { background:var(--blue); }
+  .hero { max-width:1120px; margin:0 auto; padding:40px 20px 8px; }
+  .hero h1 { margin:0 0 6px; font-size:clamp(1.8rem,4vw,2.5rem); letter-spacing:-.02em; }
+  .hero p { margin:0; color:var(--muted); max-width:640px; }
+  .tag { display:inline-block; margin-bottom:12px; padding:3px 10px; border-radius:999px;
+         background:var(--warnbg); color:var(--warn); font-size:.78rem; font-weight:600; }
+  main { max-width:1120px; margin:0 auto; padding:24px 20px 56px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; overflow:hidden;
+          display:flex; flex-direction:column; box-shadow:0 1px 2px rgba(16,24,40,.04); }
+  .art { height:150px; display:grid; place-items:center; }
+  .art svg { width:72px; height:72px; }
+  .body { padding:18px 20px 20px; display:flex; flex-direction:column; flex:1; }
+  .body h2 { margin:0; font-size:1.08rem; }
+  .body p { margin:4px 0 14px; color:var(--muted); font-size:.92rem; flex:1; }
+  .price { font-size:1.35rem; font-weight:700; margin-bottom:14px; }
+  .buttons { min-height:48px; }
+  .result { display:none; margin-bottom:24px; background:#fff; border:1px solid var(--line);
+            border-left:4px solid var(--blue); border-radius:12px; padding:16px 18px; }
+  .result.show { display:block; }
+  .result.error { border-left-color:var(--bad); }
+  .result h3 { margin:0 0 4px; font-size:1.02rem; }
+  .result .meta { color:var(--muted); font-size:.88rem; word-break:break-all; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.8rem; font-weight:600; }
+  .pill.low { color:var(--ok); background:var(--okbg); }
+  .pill.medium { color:var(--warn); background:var(--warnbg); }
+  .pill.high { color:var(--bad); background:var(--badbg); }
+  .help { margin-top:28px; color:var(--muted); font-size:.9rem; }
+  .help b { color:var(--ink); }
+</style>
+</head>
+<body>
+<div class="bar"><div class="bar-in">
+  <div class="brand"><span class="logo" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z"/></svg>
+  </span>PayGuard Demo Shop</div>
+  <a class="dash" href="/" target="_blank" rel="noopener">Open PayGuard dashboard &rarr;</a>
+</div></div>
+
+<section class="hero">
+  <span class="tag">PayPal sandbox · no real money</span>
+  <h1>Outdoor gear, paid with PayPal</h1>
+  <p>A small demo store that sells through PayPal. Every order is created and captured
+     on the server with the Orders v2 API, then scored by PayGuard AI in the seller's dashboard.</p>
+</section>
+
+<main>
+  <div id="result" class="result" role="status" aria-live="polite"></div>
+  <div id="grid" class="grid"></div>
+  <p class="help">To pay, click a PayPal button and log in with a <b>sandbox personal (buyer) account</b>
+     from developer.paypal.com &rarr; Testing tools &rarr; Sandbox accounts.
+     The payment then shows up in the <a href="/" target="_blank" rel="noopener">PayGuard dashboard</a>
+     within a few seconds, with its risk score.</p>
+</main>
+
+<script>
+const PRODUCTS = __PRODUCTS_JSON__;
+const ART = {
+  bottle: '<path d="M10 2h4v3l2 3v12a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V8l2-3z"/><path d="M8 12h8"/>',
+  beanie: '<path d="M4 16a8 8 0 0 1 16 0"/><rect x="3" y="16" width="18" height="4" rx="1"/><circle cx="12" cy="5" r="1.6"/>',
+  pack:   '<rect x="5" y="6" width="14" height="15" rx="3"/><path d="M9 6V4a3 3 0 0 1 6 0v2"/><path d="M8 13h8v4H8z"/>',
+  tent:   '<path d="M2 20L12 4l10 16z"/><path d="M12 4v16"/><path d="M9 20l3-5 3 5"/>',
+};
+const $ = (id) => document.getElementById(id);
+const money = (v) => '$' + Number(v).toFixed(2);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function show(html, isError) {
+  const box = $('result');
+  box.innerHTML = html;
+  box.className = 'result show' + (isError ? ' error' : '');
+  box.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+for (const [sku, p] of Object.entries(PRODUCTS)) {
+  const card = document.createElement('article');
+  card.className = 'card';
+  card.innerHTML =
+    `<div class="art" style="background:${p.tint}"><svg viewBox="0 0 24 24" fill="none" stroke="${p.ink}"
+       stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ART[p.art]}</svg></div>
+     <div class="body"><h2>${esc(p.name)}</h2><p>${esc(p.blurb)}</p>
+     <div class="price">${money(p.price)} <small style="color:var(--muted);font-weight:500">USD</small></div>
+     <div id="paypal-${sku}" class="buttons"></div></div>`;
+  $('grid').appendChild(card);
+
+  if (!window.paypal) continue;
+  paypal.Buttons({
+    style: { layout: 'vertical', shape: 'pill', label: 'paypal', height: 44 },
+    fundingSource: paypal.FUNDING.PAYPAL,
+    createOrder: async () => {
+      const r = await fetch('/api/shop/orders', { method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({sku}) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || 'Could not create the order');
+      return d.id;
+    },
+    onApprove: async (data) => {
+      show('<h3>Capturing your payment…</h3>');
+      const r = await fetch(`/api/shop/orders/${encodeURIComponent(data.orderID)}/capture`, {method: 'POST'});
+      const d = await r.json();
+      if (!r.ok) return show(`<h3>Payment not captured</h3><div class="meta">${esc(d.detail || 'Unknown error')}</div>`, true);
+      const risk = d.level ? ` <span class="pill ${d.level}">PayGuard score ${d.score.toFixed(1)} · ${d.level} risk</span>` : '';
+      show(`<h3>Thank you! ${esc(p.name)} paid: ${money(d.amount)}${risk}</h3>
+            <div class="meta">PayPal capture ${esc(d.capture_id)} · order ${esc(data.orderID)}</div>
+            <div class="meta" style="margin-top:6px">The seller sees it now in the
+            <a href="/" target="_blank" rel="noopener">PayGuard dashboard</a>.</div>`);
+    },
+    onCancel: () => show('<h3>Checkout cancelled</h3><div class="meta">No payment was taken.</div>', true),
+    onError: (err) => show(`<h3>PayPal checkout error</h3><div class="meta">${esc(err.message || err)}</div>`, true),
+  }).render(`#paypal-${sku}`);
+}
+if (!window.paypal) show('<h3>PayPal could not load</h3><div class="meta">Check PAYPAL_CLIENT_ID and your connection.</div>', true);
+</script>
+</body>
+</html>

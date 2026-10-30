@@ -77,9 +77,15 @@ class Ledger:
         """Store a captured order (the response of create/capture_order)."""
         cap = order["purchase_units"][0]["payments"]["captures"][0]
         payer = order.get("payer", {})
+        # Upsert: the same capture can arrive again (its webhook, a retried capture call);
+        # keep the seller's decision and any payer details already known.
         self.conn.execute(
-            "INSERT OR REPLACE INTO payments (capture_id, order_id, created_at, amount, currency,"
-            " status, payer_id, payer_email, country, raw) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO payments (capture_id, order_id, created_at, amount, currency,"
+            " status, payer_id, payer_email, country, raw) VALUES (?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(capture_id) DO UPDATE SET order_id = excluded.order_id,"
+            " payer_id = COALESCE(excluded.payer_id, payer_id),"
+            " payer_email = COALESCE(excluded.payer_email, payer_email),"
+            " country = COALESCE(excluded.country, country), raw = excluded.raw",
             (
                 cap["id"], order["id"],
                 cap.get("create_time") or datetime.now(timezone.utc).isoformat(),

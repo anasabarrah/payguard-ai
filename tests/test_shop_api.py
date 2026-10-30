@@ -45,17 +45,24 @@ def test_shop_renders_paypal_buttons(http, monkeypatch):
     monkeypatch.setenv("PAYPAL_CLIENT_ID", "sandbox-client")
     r = http.get("/shop/")
     assert r.status_code == 200
-    assert "https://www.paypal.com/sdk/js?client-id=sandbox-client" in r.text
-    assert all(f"paypal-{sku}" in r.text for sku in shop_api.PRODUCTS)
+    assert "https://www.paypal.com/sdk/js?client-id=sandbox-client&" in r.text
+    assert 'href="/"' in r.text and "Open PayGuard dashboard" in r.text
+    assert all(sku in r.text for sku in shop_api.PRODUCTS) and len(shop_api.PRODUCTS) == 4
+    assert "__" not in r.text.split("<script>", 2)[-1]          # every placeholder filled
     assert http.get("/shop", follow_redirects=False).headers["location"] == "/shop/"
+
+
+def test_shop_page_escapes_client_id(http, monkeypatch):
+    monkeypatch.setenv("PAYPAL_CLIENT_ID", '"><script>alert(1)</script>')
+    assert "<script>alert(1)" not in http.get("/shop/").text
 
 
 def test_shop_order_uses_server_catalog(http, paypal):
     paypal.create_order.return_value = {"id": "ORDER-1"}
-    r = http.post("/api/shop/orders", json={"sku": "plus", "price": 0.01})
+    r = http.post("/api/shop/orders", json={"sku": "pack", "price": 0.01})
     assert r.status_code == 200 and r.json() == {"id": "ORDER-1"}
-    assert paypal.create_order.call_args.args[0] == shop_api.PRODUCTS["plus"]["price"]
-    assert paypal.create_order.call_args.kwargs["custom_id"] == "plus"
+    assert paypal.create_order.call_args.args[0] == shop_api.PRODUCTS["pack"]["price"]
+    assert paypal.create_order.call_args.kwargs["custom_id"] == "pack"
 
 
 @pytest.mark.parametrize("body", [b'{"sku": "anything"}', b"not json", b"[1]"])
@@ -72,22 +79,35 @@ def test_capture_checks_shop_custom_id(http, paypal):
 
 
 def test_capture_records_payment_with_payer(http, paypal, ledger):
-    price = f"{shop_api.PRODUCTS['plus']['price']:.2f}"
+    price = f"{shop_api.PRODUCTS['pack']['price']:.2f}"
     paypal.get_order.return_value = {"id": "ORDER-1", "status": "APPROVED", "purchase_units": [{
-        "custom_id": "plus", "amount": {"currency_code": "USD", "value": price}}]}
+        "custom_id": "pack", "amount": {"currency_code": "USD", "value": price}}]}
     paypal.capture_order.return_value = _captured(value=price, payer={
         "payer_id": "BUYER1", "email_address": "buyer@example.com",
         "address": {"country_code": "US"}})
     r = http.post("/api/shop/orders/ORDER-1/capture")
     assert r.status_code == 200 and r.json()["capture_id"] == "CAP-1"
+    assert r.json()["level"] in {"low", "medium", "high"} and 0 <= r.json()["score"] <= 100
     row = ledger.get("CAP-1")
     assert row["amount"] == float(price)
     assert (row["payer_email"], row["country"]) == ("buyer@example.com", "US")
 
 
+def test_capturing_again_keeps_the_sellers_decision(http, paypal, ledger):
+    price = f"{shop_api.PRODUCTS['tent']['price']:.2f}"
+    done = _captured(value=price)
+    done["purchase_units"][0].update(custom_id="tent", amount={"currency_code": "USD", "value": price})
+    paypal.get_order.return_value = done                       # already COMPLETED
+    assert http.post("/api/shop/orders/ORDER-1/capture").status_code == 200
+    ledger.record_decision("CAP-1", "monitor")
+    assert http.post("/api/shop/orders/ORDER-1/capture").status_code == 200
+    paypal.capture_order.assert_not_called()
+    assert ledger.get("CAP-1")["decision"] == "monitor"
+
+
 def test_capture_rejects_changed_amount(http, paypal):
     paypal.get_order.return_value = {"id": "O", "status": "APPROVED", "purchase_units": [{
-        "custom_id": "plus", "amount": {"currency_code": "USD", "value": "1.00"}}]}
+        "custom_id": "pack", "amount": {"currency_code": "USD", "value": "1.00"}}]}
     assert http.post("/api/shop/orders/O/capture").status_code == 400
     paypal.capture_order.assert_not_called()
 
