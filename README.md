@@ -9,11 +9,26 @@ anything happens on PayPal. Built for the PayPal AI Hackathon.
   by an LLM on Groq, with every number checked against those reasons
 - **Agent proposal**: approve, monitor or refund. Refunds go through the
   PayPal REST API only after the seller confirms.
+- **Agent reviews the whole queue**: one click gives a plan ("2 payments to
+  refund, 2 to monitor, 6 to approve, estimated loss avoided: $2,415.14"), with
+  numbers computed by the code and checked in the LLM's text; the seller
+  applies it in one click and confirms refunds separately
+- **PayGuard Demo Shop**: a real PayPal checkout (JavaScript SDK buttons,
+  sandbox buyer account, Orders v2 created and captured on the server)
+- **Real-time PayPal webhooks**: `PAYMENT.CAPTURE.COMPLETED` and
+  `PAYMENT.CAPTURE.REFUNDED`, verified with PayPal's `verify-webhook-signature`
+  API; new payments appear in the dashboard by themselves, with their score
 - **No judgment on nationality**: the payer's country is only used as a
   domestic vs cross-border signal, every foreign country is treated the same,
   and the seller always makes the final decision
 - **Streamlit dashboard** with a one-click demo that creates real PayPal sandbox
   payments, some of them suspicious
+
+| Seller dashboard | Agent plan for the whole queue |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Agent plan](docs/screenshots/agent_plan.png) |
+
+![PayGuard Demo Shop](docs/screenshots/shop.png)
 
 ## Installation
 
@@ -30,7 +45,7 @@ cp .env.example .env                   # then fill in the values
 | Variable | Required | Purpose |
 |---|---|---|
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | yes | a **sandbox** app from the PayPal developer dashboard |
-| `PAYPAL_WEBHOOK_ID` | for webhooks | ID returned by `scripts/register_paypal_webhook.py` |
+| `PAYPAL_WEBHOOK_ID` | for webhooks | ID printed by `scripts/register_paypal_webhook.py`; without it every webhook is refused |
 | `GROQ_API_KEY` | no | plain-English explanations (free key at console.groq.com); without it a template sentence is used |
 | `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
 
@@ -122,7 +137,9 @@ and a `render.yaml` Blueprint for a free web service.
    then redeploy.
    `GROQ_MODEL` is preset.
 3. Deploy. The app is served on the `onrender.com` URL Render gives you; the
-   health check is `/_stcore/health`.
+   health check is `/_stcore/health`. The same port serves the dashboard
+   (`/`), the shop (`/shop/`) and the webhook (`/webhooks/paypal`).
+4. Register the webhook (see above), set `PAYPAL_WEBHOOK_ID`, redeploy.
 
 Behaviour on the free plan:
 - The service sleeps after ~15 minutes without traffic; the next visit takes
@@ -131,54 +148,71 @@ Behaviour on the free plan:
   deploy or restart. Click **⚡ Simulate payments** to create demo payments.
 - All visitors share one ledger, and anyone with the URL can trigger sandbox
   refunds. Only use sandbox credentials.
+- Refunds fail with `REFUND_FAILED_INSUFFICIENT_FUNDS` when the sandbox
+  business account's balance is lower than the refund (each demo run refunds
+  up to ~$3,000). Keep a large balance on that sandbox account.
 
-The app uses about 190 MB of RAM, within the free plan's 512 MB.
+The app runs as one process and uses about 250 MB of RAM with the model
+loaded and a dashboard open, within the free plan's 512 MB.
 
 ## Tests
 
 ```bash
-pytest -q                               # offline: client, model, explanations, agent, UI
+pytest -q                               # offline: client, model, explanations, agent, shop, webhooks, UI
 python scripts/paypal_smoke_test.py     # live sandbox: auth, order, capture, refund
 ```
 
 The UI tests drive `app.py` headlessly with Streamlit's `AppTest`, using mocked
 PayPal and Groq clients. They check, for example, that a refund never reaches
-PayPal before the seller confirms.
+PayPal before the seller confirms, including refunds in an agent plan. The shop
+and webhook routes are tested over HTTP (forged, unverifiable and duplicate
+webhooks, amounts changed after approval), and `tests/test_server.py` starts
+`server.py` as the Dockerfile does and checks that one port serves the
+dashboard, the shop and the webhook.
 
 ## Architecture
 
 ```
-            PayPal sandbox (REST v2: orders, captures, refunds)
-                 ▲                                   │
-     refund only │                                   │ create / capture
-   after confirm │                                   ▼
-┌──────────────────────────┐    ┌─────────────────────────────────────┐
-│ app.py (Streamlit)       │    │ payguard/ledger.py  SQLite ledger    │
-│ list · detail · buttons  │◄──►│ payments, decisions, cached sentences│
-└────────────┬─────────────┘    └─────────────────────────────────────┘
-             │
-┌────────────▼─────────────┐  features   ┌──────────────────────────┐
-│ payguard/agent.py        │────────────►│ payguard/risk.py         │
-│ review → propose →       │             │ LightGBM → 0-100 score   │
-│ execute(seller_confirmed)│◄────────────│ models/ (shipped)        │
-└────────────┬─────────────┘   score     └──────────────────────────┘
-             │ reasons
-┌────────────▼─────────────┐
-│ payguard/explain.py      │  TreeSHAP reasons → Groq sentence
-│                          │  → number check → template fallback
-└──────────────────────────┘
+ Buyer (sandbox account)                       PayPal sandbox REST API
+ ┌──────────────────────┐  create / capture   ┌──────────────────────────────────┐
+ │ /shop/  Demo Shop    │────(Orders v2)─────►│ orders · captures · refunds       │
+ │ PayPal JS SDK buttons│                     │ verify-webhook-signature          │
+ └──────────┬───────────┘                     └──────┬──────────────▲────────────┘
+            │                           webhooks     │              │ refund, only after
+            │             CAPTURE.COMPLETED/REFUNDED │              │ seller confirms
+ ┌──────────▼────────────────────────────────────────▼──────┐       │
+ │ server.py: one process, one port (st.App)                 │       │
+ │  shop_api.py  /shop/ · /api/shop/* · /webhooks/paypal     │       │
+ │  app.py       Streamlit dashboard (/), live every 3 s     │───────┘
+ └──────────┬───────────────────────────────┬────────────────┘
+            │                               │
+ ┌──────────▼───────────┐       ┌───────────▼──────────────────────────────┐
+ │ payguard/ledger.py   │◄─────►│ payguard/agent.py                        │
+ │ SQLite: payments,    │       │ review → propose → execute(confirmed)    │
+ │ refunds, decisions,  │       │ plan_queue → summarize → apply_plan      │
+ │ webhook events       │       └───────┬───────────────────┬──────────────┘
+ └──────────────────────┘               │ features          │ facts
+                              ┌─────────▼────────┐  ┌───────▼──────────────────┐
+                              │ payguard/risk.py │  │ payguard/explain.py      │
+                              │ LightGBM → 0-100 │  │ SHAP reasons, Groq text, │
+                              └──────────────────┘  │ number check, templates  │
+                                                    └──────────────────────────┘
 ```
 
 | Module | Role |
 |---|---|
-| `payguard/paypal_client.py` | OAuth, create/capture orders, refunds, Transaction Search |
-| `payguard/ledger.py` | local record of payments, decisions (audit log) and explanations |
+| `server.py` | entry point: the dashboard plus the shop and webhook routes on one port |
+| `shop_api.py` | demo shop page, Orders v2 create/capture, verified webhook receiver |
+| `templates/shop.html` | shop page (PayPal JavaScript SDK buttons) |
+| `app.py` | Streamlit dashboard: list, detail, decisions, agent plan, live updates |
+| `payguard/paypal_client.py` | OAuth, orders, refunds, webhooks (verify, register), Transaction Search |
+| `payguard/ledger.py` | local record of payments, refunds, webhook events and decisions (audit log) |
 | `payguard/features.py` | features shared by training (PaySim) and inference (ledger) |
 | `payguard/risk.py` | loads the model, turns probabilities into 0–100 scores and levels |
-| `payguard/explain.py` | SHAP reasons, Groq sentence, number check, template |
-| `payguard/agent.py` | proposes an action per level; executes only on seller confirmation |
+| `payguard/explain.py` | SHAP reasons, Groq sentences, number check, templates |
+| `payguard/agent.py` | proposals per payment and for the whole queue; executes only on seller confirmation |
 | `payguard/simulate.py` | creates the demo sandbox payments |
-| `scripts/` | dataset download, training, PayPal smoke test |
+| `scripts/` | dataset download, training, PayPal smoke test, webhook registration |
 
 ## Explanations
 
