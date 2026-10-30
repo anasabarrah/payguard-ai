@@ -1,7 +1,9 @@
-# Runtime: what the Streamlit app needs (used by the Docker image / Render).
+# Runtime: what the app needs (used by the Docker image / Render).
 requests>=2.31
 python-dotenv>=1.0
 numpy>=1.26
 pandas>=2.1
 lightgbm>=4.3
-streamlit>=1.50
+# 1.66+ for st.App, which serves the shop and webhook routes next to the dashboard.
+streamlit>=1.66,<2
+starlette

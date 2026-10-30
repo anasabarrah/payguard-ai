@@ -1,4 +1,5 @@
 """Offline tests for the PayPal client and ledger (HTTP is mocked)."""
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -63,9 +64,9 @@ def test_ledger_capture_and_refund(tmp_path):
     led = Ledger(tmp_path / "l.db")
     assert capture_id_of(ORDER) == "CAP1"
     led.record_capture(ORDER, country="FR")
-    led.record_refund("CAP1", {"amount": {"value": "4.00"}})
+    led.record_refund("CAP1", {"id": "R1", "amount": {"value": "4.00"}})
     assert led.get("CAP1")["status"] == "PARTIALLY_REFUNDED"
-    led.record_refund("CAP1", {"amount": {"value": "6.00"}})
+    led.record_refund("CAP1", {"id": "R2", "amount": {"value": "6.00"}})
     p = led.list_payments()[0]
     assert p["status"] == "REFUNDED" and p["refunded"] == 10.0 and p["country"] == "FR"
 
@@ -86,11 +87,21 @@ def test_webhook_signature_verification_payload(client):
         "paypal-transmission-id": "T1", "paypal-transmission-sig": "sig",
         "paypal-transmission-time": "2026-10-30T12:00:00Z",
     }
-    assert client.verify_webhook_signature("WH1", headers, {"id": "EV1"})
+    raw = b'{"id":"EV1","resource":{"amount":{"value":"79.00"}},"summary":"caf\\u00e9"}'
+    assert client.verify_webhook_signature("WH1", headers, raw)
     _, kwargs = client.session.request.call_args
-    assert kwargs["json"]["webhook_id"] == "WH1"
-    assert kwargs["json"]["webhook_event"] == {"id": "EV1"}
+    sent = json.loads(kwargs["data"])
+    assert sent["webhook_id"] == "WH1" and sent["auth_algo"] == "SHA256withRSA"
+    # The event goes back byte for byte, not re-serialised.
+    assert kwargs["data"].endswith('"webhook_event": ' + raw.decode() + "}")
+
+
+def test_webhook_signature_failure_is_false(client):
+    client.session.request.return_value = _resp(200, {"verification_status": "FAILURE"})
+    headers = {k: "x" for k in ("paypal-auth-algo", "paypal-cert-url", "paypal-transmission-id",
+                                "paypal-transmission-sig", "paypal-transmission-time")}
+    assert not client.verify_webhook_signature("WH1", headers, b'{"id":"EV1"}')
 
 
 def test_webhook_signature_rejects_missing_headers(client):
-    assert not client.verify_webhook_signature("WH1", {}, {"id": "EV1"})
+    assert not client.verify_webhook_signature("WH1", {}, b'{"id":"EV1"}')

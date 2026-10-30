@@ -5,6 +5,7 @@ PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and optionally PAYPAL_BASE_URL.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -59,7 +60,7 @@ class PayPalClient:
         return self._token
 
     def _request(self, method: str, path: str, *, json: dict | None = None,
-                 params: dict | None = None, idempotent: bool = False,
+                 data: str | None = None, params: dict | None = None, idempotent: bool = False,
                  headers: dict | None = None) -> dict:
         h = {
             "Authorization": f"Bearer {self.get_access_token()}",
@@ -70,7 +71,7 @@ class PayPalClient:
         if headers:
             h.update(headers)
         resp = self.session.request(method, f"{self.base_url}{path}", json=json,
-                                    params=params, headers=h, timeout=self.timeout)
+                                    data=data, params=params, headers=h, timeout=self.timeout)
         if resp.status_code >= 400:
             raise PayPalError(resp.status_code, _body(resp))
         return resp.json() if resp.content else {}
@@ -111,23 +112,26 @@ class PayPalClient:
         return self._request("POST", f"/v2/payments/captures/{capture_id}/refund", json=body,
                              idempotent=True, headers={"Prefer": "return=representation"})
 
-    def verify_webhook_signature(self, webhook_id: str, headers: dict,
-                                 event: dict) -> bool:
-        """Ask PayPal to verify the signature on a webhook event."""
-        transmission = {
+    def verify_webhook_signature(self, webhook_id: str, headers: dict, raw_body: bytes | str) -> bool:
+        """Ask PayPal whether a webhook delivery is authentic.
+
+        The event is sent back exactly as received: PayPal signs the raw body, so
+        re-serialising the parsed JSON could change it and fail verification.
+        """
+        fields = {
             "auth_algo": headers.get("paypal-auth-algo"),
             "cert_url": headers.get("paypal-cert-url"),
             "transmission_id": headers.get("paypal-transmission-id"),
             "transmission_sig": headers.get("paypal-transmission-sig"),
             "transmission_time": headers.get("paypal-transmission-time"),
             "webhook_id": webhook_id,
-            "webhook_event": event,
         }
-        if not all(transmission[k] for k in ("auth_algo", "cert_url", "transmission_id",
-                                              "transmission_sig", "transmission_time")):
+        if not all(fields.values()):
             return False
-        result = self._request("POST", "/v1/notifications/verify-webhook-signature",
-                               json=transmission)
+        if isinstance(raw_body, bytes):
+            raw_body = raw_body.decode("utf-8")
+        body = json.dumps(fields)[:-1] + ', "webhook_event": ' + raw_body + "}"
+        result = self._request("POST", "/v1/notifications/verify-webhook-signature", data=body)
         return result.get("verification_status") == "SUCCESS"
 
     def list_webhooks(self) -> list[dict]:

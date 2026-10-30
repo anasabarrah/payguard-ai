@@ -39,10 +39,10 @@ cp .env.example .env                   # then fill in the values
 ## Run
 
 ```bash
-PORT=8500 ./start.sh
+streamlit run server.py
 ```
 
-Open http://localhost:8500 and click **⚡ Simulate payments** in the sidebar.
+Open http://localhost:8501 and click **⚡ Simulate payments** in the sidebar.
 It creates 10 real sandbox card payments: 4 domestic regulars, 2 foreign
 customers with a normal basket (CA, GB: still low, since being foreign is not
 suspicious on its own), then 4 new foreign buyers with unusually large orders:
@@ -61,7 +61,7 @@ median ticket at the ordinary level when several people run the demo.
 
 ### PayPal checkout shop
 
-Open http://localhost:8500/shop/ (or click **Open the PayGuard Demo Shop** in
+Open http://localhost:8501/shop/ (or click **Open the PayGuard Demo Shop** in
 the dashboard). Choose a fixed-price demo item and approve checkout with a
 PayPal **sandbox buyer** account. The JavaScript SDK renders the PayPal button;
 the app creates and captures the Orders v2 order server-side. The capture is
@@ -69,11 +69,11 @@ written to the same ledger and appears in the dashboard on its next refresh,
 with a PayGuard score. The 6 low / 2 medium / 2 high **Simulate payments** demo
 is unchanged.
 
-The Render service uses Nginx on Render's single `$PORT`: it routes the
-dashboard and its WebSockets to Streamlit, `/shop/` and `/api/` to a small Starlette API, and
-`/webhooks/paypal` to the webhook handler. Both app servers share the SQLite
-ledger. This preserves the existing dashboard while fitting one free web
-service; the container runs three processes.
+Everything runs in **one process on one port**: `server.py` wraps the
+dashboard in Streamlit's ASGI app (`st.App`, Streamlit 1.66+) and adds the
+routes from `shop_api.py`: `/shop/`, `/api/shop/...` and `/webhooks/paypal`.
+PayPal calls in those routes run in worker threads, so a slow PayPal response
+never blocks the dashboard. This fits one free Render web service.
 
 Register the sandbox webhook after deploying, using the same PayPal sandbox
 app credentials configured in Render:

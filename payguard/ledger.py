@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS decisions (
     chosen_action   TEXT NOT NULL,
     refund_id       TEXT
 );
+CREATE TABLE IF NOT EXISTS refunds (
+    refund_id   TEXT PRIMARY KEY,
+    capture_id  TEXT NOT NULL,
+    amount      REAL NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS paypal_webhook_events (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL,
@@ -57,7 +63,7 @@ class Ledger:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path or os.getenv("PAYGUARD_DB") or DEFAULT_DB)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(payments)")}
@@ -119,22 +125,32 @@ class Ledger:
                         if link.get("rel") == "up":
                             capture_id = link.get("href", "").rstrip("/").split("/")[-1]
                             break
-                if capture_id and amount.get("value"):
-                    value = float(amount["value"])
-                    self.conn.execute(
-                        "UPDATE payments SET refunded=MIN(amount,refunded+?), status=CASE "
-                        "WHEN refunded+? >= amount THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END "
-                        "WHERE capture_id=?", (value, value, capture_id))
+                if capture_id and resource.get("id") and amount.get("value"):
+                    self._apply_refund(capture_id, resource["id"], float(amount["value"]))
+                    # Refunded from PayPal itself, not from PayGuard: log it so it leaves the queue.
+                    row = self.conn.execute("SELECT decision, refunded, amount FROM payments"
+                                            " WHERE capture_id = ?", (capture_id,)).fetchone()
+                    if row and row["decision"] is None and row["refunded"] >= row["amount"]:
+                        self._log_decision(capture_id, "refund", None, None, resource["id"])
         return True
 
     def record_refund(self, capture_id: str, refund: dict) -> None:
-        value = float(refund["amount"]["value"])
+        with self.conn:
+            self._apply_refund(capture_id, refund["id"], float(refund["amount"]["value"]))
+
+    def _apply_refund(self, capture_id: str, refund_id: str, value: float) -> None:
+        """Add a refund once per PayPal refund id (the API response and its webhook both report it)."""
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO refunds VALUES (?,?,?,?)",
+            (refund_id, capture_id, value, datetime.now(timezone.utc).isoformat()))
+        if not cur.rowcount:
+            return
         self.conn.execute(
-            "UPDATE payments SET refunded = refunded + ?, status = CASE WHEN refunded + ? >= amount"
-            " THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END WHERE capture_id = ?",
+            "UPDATE payments SET refunded = MIN(amount, refunded + ?), status = CASE"
+            " WHEN refunded + ? >= amount THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END"
+            " WHERE capture_id = ?",
             (value, value, capture_id),
         )
-        self.conn.commit()
 
     def list_payments(self) -> list[dict]:
         rows = self.conn.execute(
@@ -147,6 +163,11 @@ class Ledger:
 
     def record_decision(self, capture_id: str, action: str, risk_score: float | None = None,
                         proposed_action: str | None = None, refund_id: str | None = None) -> None:
+        with self.conn:
+            self._log_decision(capture_id, action, risk_score, proposed_action, refund_id)
+
+    def _log_decision(self, capture_id: str, action: str, risk_score: float | None,
+                      proposed_action: str | None, refund_id: str | None) -> None:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.conn.execute(
             "INSERT INTO decisions (capture_id, decided_at, risk_score, proposed_action,"
@@ -155,7 +176,6 @@ class Ledger:
         )
         self.conn.execute("UPDATE payments SET decision = ?, decided_at = ? WHERE capture_id = ?",
                           (action, now, capture_id))
-        self.conn.commit()
 
     def decisions(self, capture_id: str | None = None) -> list[dict]:
         q, args = "SELECT * FROM decisions", ()
