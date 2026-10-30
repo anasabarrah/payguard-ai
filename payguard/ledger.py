@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS decisions (
     chosen_action   TEXT NOT NULL,
     refund_id       TEXT
 );
+CREATE TABLE IF NOT EXISTS paypal_webhook_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
 """
 
 # Columns added after the first release; created on open if missing.
@@ -81,6 +86,46 @@ class Ledger:
         )
         self.conn.commit()
         return cap["id"]
+
+    def record_webhook(self, event: dict) -> bool:
+        """Apply a verified PayPal capture/refund event once; return whether it was new."""
+        event_id, kind = event.get("id"), event.get("event_type")
+        resource = event.get("resource") or {}
+        if not event_id or kind not in {"PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.REFUNDED"}:
+            return False
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO paypal_webhook_events VALUES (?,?,?)",
+                (event_id, kind, datetime.now(timezone.utc).isoformat()))
+            if not cur.rowcount:
+                return False
+            if kind == "PAYMENT.CAPTURE.COMPLETED":
+                capture_id = resource.get("id")
+                amount = resource.get("amount") or {}
+                if capture_id and amount.get("value") and amount.get("currency_code"):
+                    order_id = ((resource.get("supplementary_data") or {}).get("related_ids") or {}).get("order_id") or "UNKNOWN"
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO payments (capture_id,order_id,created_at,amount,currency,status,raw)"
+                        " VALUES (?,?,?,?,?,?,?)",
+                        (capture_id, order_id, resource.get("create_time") or datetime.now(timezone.utc).isoformat(),
+                         float(amount["value"]), amount["currency_code"], resource.get("status", "COMPLETED"),
+                         json.dumps(event)))
+            else:
+                amount = resource.get("amount") or {}
+                related = ((resource.get("supplementary_data") or {}).get("related_ids") or {})
+                capture_id = related.get("capture_id")
+                if not capture_id:
+                    for link in resource.get("links", []):
+                        if link.get("rel") == "up":
+                            capture_id = link.get("href", "").rstrip("/").split("/")[-1]
+                            break
+                if capture_id and amount.get("value"):
+                    value = float(amount["value"])
+                    self.conn.execute(
+                        "UPDATE payments SET refunded=MIN(amount,refunded+?), status=CASE "
+                        "WHEN refunded+? >= amount THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END "
+                        "WHERE capture_id=?", (value, value, capture_id))
+        return True
 
     def record_refund(self, capture_id: str, refund: dict) -> None:
         value = float(refund["amount"]["value"])

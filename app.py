@@ -167,6 +167,7 @@ st.markdown("""
   <div><div class="pg-title">PayGuard AI</div>
   <div class="pg-sub">Fraud review for PayPal sellers · every alert explained · you decide</div></div>
 </div>""", unsafe_allow_html=True)
+st.markdown("[🛍️ Open the PayGuard Demo Shop](/shop/)")
 
 alerts = agent.review()
 if not alerts:

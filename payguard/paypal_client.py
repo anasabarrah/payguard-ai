@@ -77,10 +77,13 @@ class PayPalClient:
 
     # --- orders -----------------------------------------------------------
     def create_order(self, amount: float | str, currency: str = "USD",
-                     description: str | None = None, payment_source: dict | None = None) -> dict:
+                     description: str | None = None, payment_source: dict | None = None,
+                     custom_id: str | None = None) -> dict:
         unit = {"amount": {"currency_code": currency, "value": f"{float(amount):.2f}"}}
         if description:
             unit["description"] = description
+        if custom_id:
+            unit["custom_id"] = custom_id
         body: dict = {"intent": "CAPTURE", "purchase_units": [unit]}
         if payment_source:
             body["payment_source"] = payment_source
@@ -107,6 +110,33 @@ class PayPalClient:
             body["note_to_payer"] = note
         return self._request("POST", f"/v2/payments/captures/{capture_id}/refund", json=body,
                              idempotent=True, headers={"Prefer": "return=representation"})
+
+    def verify_webhook_signature(self, webhook_id: str, headers: dict,
+                                 event: dict) -> bool:
+        """Ask PayPal to verify the signature on a webhook event."""
+        transmission = {
+            "auth_algo": headers.get("paypal-auth-algo"),
+            "cert_url": headers.get("paypal-cert-url"),
+            "transmission_id": headers.get("paypal-transmission-id"),
+            "transmission_sig": headers.get("paypal-transmission-sig"),
+            "transmission_time": headers.get("paypal-transmission-time"),
+            "webhook_id": webhook_id,
+            "webhook_event": event,
+        }
+        if not all(transmission[k] for k in ("auth_algo", "cert_url", "transmission_id",
+                                              "transmission_sig", "transmission_time")):
+            return False
+        result = self._request("POST", "/v1/notifications/verify-webhook-signature",
+                               json=transmission)
+        return result.get("verification_status") == "SUCCESS"
+
+    def list_webhooks(self) -> list[dict]:
+        return self._request("GET", "/v1/notifications/webhooks").get("webhooks", [])
+
+    def create_webhook(self, url: str, events: list[str]) -> dict:
+        return self._request("POST", "/v1/notifications/webhooks", json={
+            "url": url, "event_types": [{"name": name} for name in events],
+        }, idempotent=True)
 
     # --- reporting --------------------------------------------------------
     def can_search_transactions(self) -> bool:

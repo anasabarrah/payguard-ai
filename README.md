@@ -30,6 +30,7 @@ cp .env.example .env                   # then fill in the values
 | Variable | Required | Purpose |
 |---|---|---|
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | yes | a **sandbox** app from the PayPal developer dashboard |
+| `PAYPAL_WEBHOOK_ID` | for webhooks | ID returned by `scripts/register_paypal_webhook.py` |
 | `GROQ_API_KEY` | no | plain-English explanations (free key at console.groq.com); without it a template sentence is used |
 | `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
 
@@ -38,10 +39,10 @@ cp .env.example .env                   # then fill in the values
 ## Run
 
 ```bash
-streamlit run app.py
+PORT=8500 ./start.sh
 ```
 
-Open http://localhost:8501 and click **⚡ Simulate payments** in the sidebar.
+Open http://localhost:8500 and click **⚡ Simulate payments** in the sidebar.
 It creates 10 real sandbox card payments: 4 domestic regulars, 2 foreign
 customers with a normal basket (CA, GB: still low, since being foreign is not
 suspicious on its own), then 4 new foreign buyers with unusually large orders:
@@ -58,6 +59,38 @@ runs, low scores stay at or below 88.5, medium at 97.7–98.9 and high at 99.9 o
 above. Six of the ten payments are ordinary on purpose: this keeps the 24 h
 median ticket at the ordinary level when several people run the demo.
 
+### PayPal checkout shop
+
+Open http://localhost:8500/shop/ (or click **Open the PayGuard Demo Shop** in
+the dashboard). Choose a fixed-price demo item and approve checkout with a
+PayPal **sandbox buyer** account. The JavaScript SDK renders the PayPal button;
+the app creates and captures the Orders v2 order server-side. The capture is
+written to the same ledger and appears in the dashboard on its next refresh,
+with a PayGuard score. The 6 low / 2 medium / 2 high **Simulate payments** demo
+is unchanged.
+
+The Render service uses Nginx on Render's single `$PORT`: it routes the
+dashboard and its WebSockets to Streamlit, `/shop/` and `/api/` to a small Starlette API, and
+`/webhooks/paypal` to the webhook handler. Both app servers share the SQLite
+ledger. This preserves the existing dashboard while fitting one free web
+service; the container runs three processes.
+
+Register the sandbox webhook after deploying, using the same PayPal sandbox
+app credentials configured in Render:
+
+```bash
+PAYGUARD_PUBLIC_URL=https://payguard-ai-1p86.onrender.com \
+  python scripts/register_paypal_webhook.py
+```
+
+The script subscribes `PAYMENT.CAPTURE.COMPLETED` and
+`PAYMENT.CAPTURE.REFUNDED` and prints the webhook ID. Set that value as
+`PAYPAL_WEBHOOK_ID` in Render and redeploy. The listener verifies every event
+through PayPal's `verify-webhook-signature` API and deduplicates event IDs.
+Captures are added automatically; refund events update the ledger. A shop
+checkout also records the server capture response immediately, so it does not
+depend on webhook delivery. The dashboard reads the ledger on every rerun.
+
 ## Deploy on Render (free)
 
 The repo contains a `Dockerfile` (Python 3.11 slim + `libgomp1` for LightGBM)
@@ -65,7 +98,9 @@ and a `render.yaml` Blueprint for a free web service.
 
 1. In Render, choose **New → Blueprint** and connect this GitHub repository.
 2. Render reads `render.yaml` and asks for the secret values:
-   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `GROQ_API_KEY` (optional).
+   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID` and
+   `GROQ_API_KEY` (optional). Set the webhook ID after registering it above,
+   then redeploy.
    `GROQ_MODEL` is preset.
 3. Deploy. The app is served on the `onrender.com` URL Render gives you; the
    health check is `/_stcore/health`.

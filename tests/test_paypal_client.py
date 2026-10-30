@@ -77,3 +77,20 @@ def test_reporting_scope_detection(client):
         "scope": "openid https://uri.paypal.com/services/reporting/search/read"})
     client.get_access_token(force=True)
     assert client.can_search_transactions()
+
+
+def test_webhook_signature_verification_payload(client):
+    client.session.request.return_value = _resp(200, {"verification_status": "SUCCESS"})
+    headers = {
+        "paypal-auth-algo": "SHA256withRSA", "paypal-cert-url": "https://cert.test",
+        "paypal-transmission-id": "T1", "paypal-transmission-sig": "sig",
+        "paypal-transmission-time": "2026-10-30T12:00:00Z",
+    }
+    assert client.verify_webhook_signature("WH1", headers, {"id": "EV1"})
+    _, kwargs = client.session.request.call_args
+    assert kwargs["json"]["webhook_id"] == "WH1"
+    assert kwargs["json"]["webhook_event"] == {"id": "EV1"}
+
+
+def test_webhook_signature_rejects_missing_headers(client):
+    assert not client.verify_webhook_signature("WH1", {}, {"id": "EV1"})
