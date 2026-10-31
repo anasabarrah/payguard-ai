@@ -407,7 +407,8 @@ with a placeholder left, that PayPal's current state picks the action
 number, a country or a claimed attachment fall back to the template, that the
 draft gets no country, identity or risk score, and that Ask PayGuard drafts
 but never sends; the UI tests send a dispute response only after **Yes, send
-to PayPal**. The shop
+to PayPal**. These sending tests use simulated PayPal calls, not a real
+sandbox dispute (see [Data & limitations](#data--limitations)). The shop
 and webhook routes are tested over HTTP (forged, unverifiable and duplicate
 webhooks, amounts changed after approval), and `tests/test_server.py` starts
 `server.py` as the Dockerfile does and checks that one port serves the
@@ -644,9 +645,13 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   countries and claimed attachments, but the LLM can still state something the
   seller has not confirmed (for example that a signature was collected): the
   seller must read every sentence. PayGuard sends text only, no documents, and
-  does not accept claims or make offers. The flow was tested against the
-  sandbox API and with mocked disputes; the account had no dispute while it
-  was built, so sending to a real sandbox dispute is still to be checked.
+  does not accept claims or make offers.
+- **Sending a dispute response was tested with simulated PayPal calls only.**
+  Against the real sandbox, PayGuard has listed disputes (none open: the panel
+  shows *No open dispute*) and Ask PayGuard has called `list_disputes` through
+  the toolkit. A test dispute opened in the sandbox did not reach the Disputes
+  API in time, so `send-message` and `provide-evidence` have not yet been sent
+  to a real dispute; the tests check the requests PayGuard builds for them.
 
 This is a hackathon prototype trained on synthetic data. It is not a production
 fraud model.
