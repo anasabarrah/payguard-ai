@@ -44,7 +44,8 @@ class Explanation:
     source: str       # "llm" or "template"
 
 
-def describe(feature: str, value, country: str = "") -> str:
+def describe(feature: str, value) -> str:
+    """Factual text of a reason. Never says which country: only cross-border or domestic."""
     if feature == "amount_ratio":
         return f"The amount is {value:.1f}x the median payment of the previous 24 hours"
     if feature == "payer_txn_24h":
@@ -52,10 +53,7 @@ def describe(feature: str, value, country: str = "") -> str:
     if feature == "payer_is_new":
         return "This is the first payment from this payer" if value else "The payer has paid before"
     if feature == "cross_border":
-        where = f" (payer in {country})" if country else ""
-        if value:
-            return f"This is a cross-border payment{where}"
-        return f"This is a domestic payment{where}"
+        return "This is a cross-border payment" if value else "This is a domestic payment"
     raise ValueError(feature)
 
 
@@ -73,9 +71,8 @@ def top_reasons(model: RiskModel, features: pd.DataFrame, k: int = 3) -> list[li
         order = sorted(range(len(FEATURES)), key=lambda j: row[j], reverse=True)
         up = [j for j in order if row[j] > 0][:k]
         down = sorted((j for j in order if row[j] < 0), key=lambda j: row[j])[: k - len(up)]
-        country = features["payer_country"].iloc[i] if "payer_country" in features else ""
         out.append([Reason(FEATURES[j], _plain(features.iloc[i][FEATURES[j]]), float(row[j]),
-                           describe(FEATURES[j], _plain(features.iloc[i][FEATURES[j]]), country))
+                           describe(FEATURES[j], _plain(features.iloc[i][FEATURES[j]])))
                     for j in up + down])
     return out
 
@@ -139,11 +136,6 @@ def names_country(text: str) -> bool:
             or bool(_COUNTRY_WORDS.search(text)) or bool(_PAYER_LOCATION.search(text)))
 
 
-def neutral_text(r: "Reason") -> str:
-    """The reason as the LLM and the template see it: without the payer's country."""
-    return describe(r.feature, r.value)
-
-
 def levels_in(text: str) -> set[str]:
     """Risk levels a text names, e.g. "high-risk" or "a medium risk score"."""
     return set(re.findall(r"\b(low|medium|high)(?:[\s-]+risk|\s+score)", text.lower()))
@@ -160,7 +152,7 @@ def is_grounded(sentence: str, score: float, reasons: list[Reason], level: str =
 
 
 def template_sentence(score: float, level: str, reasons: list[Reason]) -> str:
-    up = [t[0].lower() + t[1:] for t in (neutral_text(r) for r in reasons if r.raises_risk)]
+    up = [r.text[0].lower() + r.text[1:] for r in reasons if r.raises_risk]
     if not up:
         return f"Risk score {score:.1f}/100 ({level}): nothing in this payment stands out as risky."
     return f"Risk score {score:.1f}/100 ({level}) mainly because {_join(up)}."
@@ -259,7 +251,7 @@ def _plural(n: int) -> str:
 def _facts(score: float, level: str, reasons: list[Reason]) -> str:
     lines = [f"Risk score: {score:.1f} out of 100" + (f" ({level} risk)" if level else "")]
     for r in reasons:
-        lines.append(f"- {neutral_text(r)} ({'raises' if r.raises_risk else 'lowers'} the risk)")
+        lines.append(f"- {r.text} ({'raises' if r.raises_risk else 'lowers'} the risk)")
     return "\n".join(lines)
 
 

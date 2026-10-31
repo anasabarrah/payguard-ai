@@ -568,8 +568,7 @@ with right:
         top_l.markdown(
             f'<div class="pg-amount">${p["amount"]:,.2f}</div>'
             f'<div class="pg-muted">{html.escape(p.get("payer_email") or "unknown payer")}</div>'
-            f'<div class="pg-muted">{flag(p.get("country"))} {p.get("country") or "—"} · '
-            f'{when(p["created_at"])}</div>'
+            f'<div class="pg-muted">{when(p["created_at"])}</div>'
             f'<div class="pg-muted" style="font-size:.78rem">Capture {p["capture_id"]}</div>'
             f'<div style="margin-top:8px">{pill(lv["label"] + " risk", lv["fg"], lv["bg"])} '
             f'{pill(status, status_color, "#F2F4F7")} '

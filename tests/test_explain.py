@@ -12,7 +12,7 @@ from payguard.risk import RiskModel
 
 REASONS = [
     Reason("amount_ratio", 22.5, 2.9, describe("amount_ratio", 22.5)),
-    Reason("cross_border", 1, 2.8, describe("cross_border", 1, "DE")),
+    Reason("cross_border", 1, 2.8, describe("cross_border", 1)),
     Reason("payer_is_new", 0, -0.3, describe("payer_is_new", 0)),
 ]
 
@@ -84,7 +84,8 @@ def test_top_reasons_match_shap(model):
     reasons = top_reasons(model, f)[-1]
     assert 1 <= len(reasons) <= 3 and all(r.shap != 0 for r in reasons)
     assert {r.feature for r in reasons[:2]} == {"amount_ratio", "cross_border"}
-    assert any("(payer in AU)" in r.text for r in reasons)
+    assert any(r.text == "This is a cross-border payment" for r in reasons)
+    assert not any(ex.names_country(r.text) for r in reasons)
     assert all(r.raises_risk for r in reasons[:2])
 
 
@@ -150,7 +151,6 @@ def test_facts_sent_to_the_llm_contain_no_country(monkeypatch):
     prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
     assert "DE" not in prompt and "payer in" not in prompt and "cross-border payment" in prompt
     assert e.source == "llm"
-    assert REASONS[1].text.endswith("(payer in DE)")   # the UI can still show it
 
 
 @pytest.mark.parametrize("text", [

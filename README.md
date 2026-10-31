@@ -507,12 +507,13 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   model only knows whether the payer's country differs from the seller's; every
   foreign country is treated the same, and a foreign buyer with a normal basket
   stays low risk. A payment is flagged when cross-border meets an abnormal
-  amount, and the seller always makes the final decision. The app shows the
-  country for the seller's information, but the model never sees which
-  country it is, and no sentence written by PayGuard names it: the
-  explanation, the queue summary and Ask PayGuard's answers say
-  "cross-border" and are rejected if they name a country. An explanation
-  cached before this check is written again.
+  amount, and the seller always makes the final decision. The country appears
+  in one place only, the **Country** column of the payments table, for the
+  seller's information. The model never sees which country it is, the SHAP
+  reasons say "This is a cross-border payment", and no sentence written by
+  PayGuard names it: the explanation, the queue summary and Ask PayGuard's
+  answers are rejected if they name a country. An explanation cached before
+  this check is written again.
 - **Cross-border is simulated.** PaySim has no geography. Each training
   transaction is marked cross-border at random (fixed seed): 20% of legitimate
   payments and 50% of fraudulent ones, for a US seller. These shares are

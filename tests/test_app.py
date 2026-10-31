@@ -235,3 +235,14 @@ def test_ask_payguard_disabled_without_groq(app):
     app.run()
     assert app.button(key="b_copilot_ex0").disabled
     assert any("Set GROQ_API_KEY" in c.value for c in app.caption)
+
+
+def test_country_only_in_the_table(app):
+    """CAP9's payer is in DE: the table says so, the alert detail and its reasons do not."""
+    _clear_caches()
+    app.run()
+    assert not app.exception
+    assert "🇩🇪 DE" in app.dataframe[0].value["Country"].tolist()
+    detail = " ".join(m.value for m in app.markdown if "pg-amount" in m.value or "pg-reason" in m.value)
+    assert "$900.00" in detail and "This is a cross-border payment" in detail
+    assert "DE" not in detail and "🇩🇪" not in detail and "payer in" not in detail
