@@ -37,8 +37,8 @@ about a minute to wake up.
 
 | | |
 |---|---|
-| Email | `JUDGE_SANDBOX_EMAIL_HERE` |
-| Password | `JUDGE_SANDBOX_PASSWORD_HERE` |
+| Email | `sb-8vqyj53636163@personal.example.com` |
+| Password | `PayGuardJudge1!` |
 
 > ⚠️ This is a **PayPal sandbox test account**: it only works on
 > sandbox.paypal.com, holds no real money and has no real card. Never type a
