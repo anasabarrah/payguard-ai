@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from payguard.explain import Explanation, Reason, describe, explain, queue_summary, top_reasons
+from payguard.explain import (Explanation, Reason, describe, explain, names_country,
+                              queue_summary, top_reasons)
 from payguard.features import features_from_payments
 from payguard.ledger import Ledger
 from payguard.paypal_client import PayPalClient, PayPalError, refund_failure_message
@@ -91,7 +92,9 @@ class PayGuardAgent:
     def explain(self, alert: Alert) -> Explanation:
         """Plain-English sentence for an alert, cached in the ledger per score."""
         p = alert.payment
-        if p.get("explanation") and p.get("explained_score") == alert.score:
+        # A cached sentence naming a country predates the fairness check: write it again.
+        if (p.get("explanation") and p.get("explained_score") == alert.score
+                and not names_country(p["explanation"])):
             return Explanation(alert.score, alert.level, alert.reasons,
                                p["explanation"], p["explanation_source"])
         e = explain(alert.score, alert.level, alert.reasons, use_llm=self.use_llm)

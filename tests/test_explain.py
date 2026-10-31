@@ -49,7 +49,8 @@ def test_invented_number_falls_back_to_template(monkeypatch):
     e = explain(99.4, "high", REASONS)
     assert e.source == "template" and post.call_count == 2  # one retry, then template
     assert is_grounded(e.sentence, 99.4, REASONS)
-    assert "22.5x" in e.sentence and "cross-border payment (payer in DE)" in e.sentence
+    assert "22.5x" in e.sentence and "cross-border payment." in e.sentence
+    assert "DE" not in e.sentence
     assert "paid before" not in e.sentence
 
 
@@ -131,3 +132,51 @@ def test_llm_sentence_with_wrong_level_falls_back_to_template(monkeypatch):
     monkeypatch.setattr(ex, "llm_complete", lambda *a, **k: "It got a high risk score of 99.4.")
     e = ex.explain(99.4, "medium", REASONS)
     assert e.source == "template" and "(medium)" in e.sentence
+
+
+# --- fairness: a sentence says "cross-border", never which country ----------------
+
+def test_sentence_naming_the_payer_country_falls_back_to_template(monkeypatch):
+    post = _groq_returns(monkeypatch, "Risk 99.4 (high): the amount is 22.5x the median payment "
+                                      "and it is a cross-border payment from a payer in IN.")
+    e = explain(99.4, "high", REASONS)
+    assert e.source == "template" and post.call_count == 2
+    assert "IN" not in e.sentence.split() and "cross-border payment" in e.sentence
+
+
+def test_facts_sent_to_the_llm_contain_no_country(monkeypatch):
+    post = _groq_returns(monkeypatch, "Risk 99.4: 22.5x the median payment, cross-border.")
+    e = explain(99.4, "high", REASONS)
+    prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert "DE" not in prompt and "payer in" not in prompt and "cross-border payment" in prompt
+    assert e.source == "llm"
+    assert REASONS[1].text.endswith("(payer in DE)")   # the UI can still show it
+
+
+@pytest.mark.parametrize("text", [
+    "a cross-border payment from a payer in IN",
+    "The buyer is from Germany.",
+    "an Indian customer",
+    "the card was issued in the US",
+    "a payment from GB",
+])
+def test_names_country_detects_countries(text):
+    assert ex.names_country(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Risk score 99.4/100 (high) mainly because the amount is 22.5x the median payment of "
+    "the previous 24 hours and this is a cross-border payment.",
+    "This is the first payment from this payer; it is a domestic payment.",
+    "PayGuard AI flags it in the SHAP reasons, so hold it in your queue.",
+    "Monitor it: in doubt, wait before shipping.",
+])
+def test_names_country_allows_neutral_sentences(text):
+    assert not ex.names_country(text)
+
+
+def test_queue_summary_naming_a_country_is_rejected(monkeypatch):
+    _groq_returns(monkeypatch, "Refund 1 payment from Australia, $1,000.00.")
+    count, total = {"refund": 1, "monitor": 0, "accept": 0}, {"refund": 1000.0, "monitor": 0.0, "accept": 0.0}
+    text, source = ex.queue_summary(count, total)
+    assert source == "template" and "Australia" not in text

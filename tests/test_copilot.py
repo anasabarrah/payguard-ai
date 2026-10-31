@@ -230,3 +230,12 @@ def test_item_of_demo_and_shop_orders():
     assert cp.item_of(json.dumps({"purchase_units": [{"description": "PayGuard demo: new foreign buyer"}]})) == "demo order"
     assert cp.item_of(json.dumps({"purchase_units": [{"description": "PayGuard Demo Shop: Merino beanie"}]})) == "Merino beanie"
     assert cp.item_of(None) is None
+
+
+def test_answer_naming_a_country_is_rejected(agent):
+    chat = Script(uses(call("get_payment_risk", capture_id="CAP9")),
+                  says("The $900.00 payment comes from a payer in Germany."),
+                  says("The $900.00 payment is from DE."))
+    res = cp.Copilot(agent, chat=chat).ask("Why?")
+    assert res.source == "template" and "Germany" not in res.answer and "DE" not in res.answer
+    assert "countries" in chat.calls[-1][0][-1]["content"]

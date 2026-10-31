@@ -383,10 +383,13 @@ score is never presented as a reason. With the current model only the amount
 and the cross-border flag have an effect (see limitations), so alerts show 2 reasons.
 
 The LLM receives only the score and the reasons as text, and is asked to
-copy numbers exactly. Before a sentence is shown, every number in it, whether
-written in digits ("22.5") or in words ("twenty"), must appear in those
-facts, and the sentence may not name another risk level than the payment's
-(e.g. "high risk" for a medium alert). If not, PayGuard retries once and then falls back to a fill-in-the-blanks
+copy numbers exactly. The reasons it receives say "cross-border" or
+"domestic", never which country. Before a sentence is shown, every number in
+it, whether written in digits ("22.5") or in words ("twenty"), must appear in
+those facts; the sentence may not name another risk level than the payment's
+(e.g. "high risk" for a medium alert); and it may not name a country, a
+nationality or where the payer is (country codes such as "IN", names such as
+"India" or "Indian", or "a payer in…"). If not, PayGuard retries once and then falls back to a fill-in-the-blanks
 template, which is also used with no `GROQ_API_KEY` or on any API error. The UI
 labels which of the two produced the sentence.
 
@@ -506,7 +509,10 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   stays low risk. A payment is flagged when cross-border meets an abnormal
   amount, and the seller always makes the final decision. The app shows the
   country for the seller's information, but the model never sees which
-  country it is.
+  country it is, and no sentence written by PayGuard names it: the
+  explanation, the queue summary and Ask PayGuard's answers say
+  "cross-border" and are rejected if they name a country. An explanation
+  cached before this check is written again.
 - **Cross-border is simulated.** PaySim has no geography. Each training
   transaction is marked cross-border at random (fixed seed): 20% of legitimate
   payments and 50% of fraudulent ones, for a US seller. These shares are

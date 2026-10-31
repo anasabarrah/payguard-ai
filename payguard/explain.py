@@ -2,8 +2,9 @@
 
 SHAP values come from LightGBM's built-in TreeSHAP (`pred_contrib=True`), which
 is exact for tree models. The sentence is written by an LLM on Groq from those
-reasons only; every number in it must appear in the reasons, otherwise (or with
-no GROQ_API_KEY, or on any API error) a fill-in-the-blanks template is used.
+reasons only; every number in it must appear in the reasons, and it must not
+name a country (only "cross-border" or "domestic"), otherwise (or with no
+GROQ_API_KEY, or on any API error) a fill-in-the-blanks template is used.
 """
 from __future__ import annotations
 
@@ -104,20 +105,62 @@ def allowed_numbers(score: float, reasons: list[Reason]) -> set[float]:
     return numbers_in(facts) | {3.0}  # "3 reasons" is harmless
 
 
+# ISO 3166-1 alpha-2 codes, matched only in capitals ("IN", not "in").
+_COUNTRY_CODES = set("""
+AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS
+BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE
+EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM
+HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC
+LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA
+NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW
+SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO
+TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW UK
+""".split()) - {"AI"}   # "AI" is far more likely to mean the technology
+_COUNTRY_WORDS = re.compile(r"\b(" + "|".join("""
+afghan\w* albania\w* algeria\w* argentin\w* australia\w* austria\w* bangladesh\w* belgi\w*
+brazil\w* britain british canad\w* chile\w* china chinese colombia\w* egypt\w* england english
+france french german\w* ghana\w* greece greek india\w* indonesia\w* iran\w* iraq\w* ireland irish
+israel\w* ital\w* japan\w* kenya\w* korea\w* mexic\w* moroc\w* netherlands dutch nigeria\w*
+norw\w* pakistan\w* philippin\w* filipino poland polish portug\w* romania\w* russia\w* saudi
+scotland scottish singapor\w* spain spanish swed\w* swiss switzerland thai\w* turk\w* ukrain\w*
+vietnam\w* america\w* usa emirates europe\w* african? asian? latin
+""".split()) + r")\b", re.I)
+_PAYER_LOCATION = re.compile(r"\b(payer|buyer|customer|card)s?\s+(?:is\s+|was\s+|located\s+)?"
+                             r"(?:in|from|based\s+in)\b", re.I)
+
+
+def names_country(text: str) -> bool:
+    """True if a text names a country, a nationality or where the payer is.
+
+    PayGuard's fairness rule: a sentence may say "cross-border" or "domestic",
+    never which country (the country stays visible in the table).
+    """
+    return (any(tok in _COUNTRY_CODES for tok in re.findall(r"\b[A-Z]{2}\b", text))
+            or bool(_COUNTRY_WORDS.search(text)) or bool(_PAYER_LOCATION.search(text)))
+
+
+def neutral_text(r: "Reason") -> str:
+    """The reason as the LLM and the template see it: without the payer's country."""
+    return describe(r.feature, r.value)
+
+
 def levels_in(text: str) -> set[str]:
     """Risk levels a text names, e.g. "high-risk" or "a medium risk score"."""
     return set(re.findall(r"\b(low|medium|high)(?:[\s-]+risk|\s+score)", text.lower()))
 
 
 def is_grounded(sentence: str, score: float, reasons: list[Reason], level: str = "") -> bool:
-    """Every number comes from the facts, and no other risk level than the real one is named."""
+    """Every number comes from the facts, no other risk level than the real one is named,
+    and no country is named."""
     if level and not levels_in(sentence) <= {level}:
+        return False
+    if names_country(sentence):
         return False
     return numbers_in(sentence) <= allowed_numbers(score, reasons)
 
 
 def template_sentence(score: float, level: str, reasons: list[Reason]) -> str:
-    up = [r.text[0].lower() + r.text[1:] for r in reasons if r.raises_risk]
+    up = [t[0].lower() + t[1:] for t in (neutral_text(r) for r in reasons if r.raises_risk)]
     if not up:
         return f"Risk score {score:.1f}/100 ({level}): nothing in this payment stands out as risky."
     return f"Risk score {score:.1f}/100 ({level}) mainly because {_join(up)}."
@@ -128,7 +171,8 @@ def llm_sentence(score: float, level: str, reasons: list[Reason], timeout: float
         "You explain fraud alerts to an online seller. Write ONE short sentence in plain "
         "English saying why this payment got its risk score. Use only the "
         "facts below. Copy every number exactly as written, using digits; do not round, "
-        "compute or add any other number. No preamble, no quotes.\n\n"
+        "compute or add any other number. Never mention countries or nationalities: say "
+        "\"cross-border\" or \"domestic\". No preamble, no quotes.\n\n"
         + _facts(score, level, reasons)
     )
     return llm_complete(prompt, timeout=timeout)
@@ -203,7 +247,7 @@ def queue_summary(count: dict, total: dict, reasons: dict[str, list[str]] | None
     )
     for _ in range(2 if use_llm else 0):
         text = llm_complete(prompt, max_tokens=3000)
-        if text and numbers_in(text) <= allowed:
+        if text and numbers_in(text) <= allowed and not names_country(text):
             return text, "llm"
     return queue_template(count, total), "template"
 
@@ -215,7 +259,7 @@ def _plural(n: int) -> str:
 def _facts(score: float, level: str, reasons: list[Reason]) -> str:
     lines = [f"Risk score: {score:.1f} out of 100" + (f" ({level} risk)" if level else "")]
     for r in reasons:
-        lines.append(f"- {r.text} ({'raises' if r.raises_risk else 'lowers'} the risk)")
+        lines.append(f"- {neutral_text(r)} ({'raises' if r.raises_risk else 'lowers'} the risk)")
     return "\n".join(lines)
 
 

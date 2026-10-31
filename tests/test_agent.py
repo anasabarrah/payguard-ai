@@ -173,3 +173,12 @@ def test_paypal_refusal_is_reported_politely(agent):
     assert message.startswith("The demo seller's PayPal sandbox balance is too low")
     assert "Nothing was refunded" in message and "{" not in message
     assert agent.ledger.get("CAP9")["decision"] is None
+
+
+def test_cached_sentence_naming_a_country_is_written_again(agent):
+    alert = next(a for a in agent.review() if a.capture_id == "CAP9")
+    agent.ledger.cache_explanation("CAP9", alert.score, "Cross-border payment from a payer in DE.", "llm")
+    alert = next(a for a in agent.review() if a.capture_id == "CAP9")
+    e = agent.explain(alert)
+    assert e.source == "template" and "DE" not in e.sentence
+    assert "DE" not in agent.ledger.get("CAP9")["explanation"]

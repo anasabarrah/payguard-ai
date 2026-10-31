@@ -36,7 +36,7 @@ import requests
 from dotenv import load_dotenv
 
 from payguard.agent import Alert, PayGuardAgent
-from payguard.explain import DEFAULT_GROQ_MODEL, GROQ_URL, describe, numbers_in
+from payguard.explain import DEFAULT_GROQ_MODEL, GROQ_URL, describe, names_country, numbers_in
 from payguard.features import is_cross_border
 
 MAX_STEPS = 6
@@ -353,6 +353,8 @@ def ungrounded(text: str, allowed: set[float], out: CopilotAnswer) -> str:
     if bad:
         return (f"Your answer contains numbers that are not in the tool results: {bad}. "
                 "Use only numbers copied from the tool results.")
+    if names_country(text):
+        return "Do not name countries or nationalities; say cross-border or domestic."
     if _CLAIMS_REFUND.search(text) and not out.proposals:
         return ("You say a refund is prepared, but prepare_refund was never called. Do not claim "
                 "it; say which payments you recommend refunding instead.")
