@@ -72,7 +72,7 @@ class Ledger:
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE payments ADD COLUMN {name} {kind}")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(decisions)")}
-        if "source" not in cols:  # who decided: seller | agent_plan | paypal
+        if "source" not in cols:  # who decided: seller | agent_plan | copilot | paypal
             self.conn.execute("ALTER TABLE decisions ADD COLUMN source TEXT")
         self.conn.commit()
 

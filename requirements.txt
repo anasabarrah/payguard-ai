@@ -7,3 +7,6 @@ lightgbm>=4.3
 # 1.66+ for st.App, which serves the shop and webhook routes next to the dashboard.
 streamlit>=1.66,<2
 starlette
+# Needed by the PayPal Agent Toolkit's tool layer (requirements-toolkit.txt).
+pydantic>=2.10
+httpx>=0.26

@@ -13,6 +13,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from payguard.agent import PayGuardAgent, QueuePlan
+from payguard.copilot import TOOLKIT_TOOLS, Copilot, step_summary, toolkit_runner
 from payguard.explain import DEFAULT_GROQ_MODEL
 from payguard.ledger import Ledger
 from payguard.paypal_client import PayPalClient, PayPalError, refund_failure_message
@@ -90,6 +91,11 @@ def get_model() -> RiskModel:
 @st.cache_resource
 def get_ledger() -> Ledger:
     return Ledger()
+
+
+@st.cache_resource
+def get_toolkit():
+    return toolkit_runner()
 
 
 @st.cache_resource
@@ -187,7 +193,8 @@ def confirm_reset():
     c1, c2 = st.columns(2)
     if c1.button("Yes, reset", type="primary", width="stretch"):
         ledger.reset()
-        for key in ("queue_plan", "selected", "refund_for", "plan_refunds", "payments_table"):
+        for key in ("queue_plan", "selected", "refund_for", "plan_refunds", "payments_table",
+                    "copilot"):
             st.session_state.pop(key, None)
         st.session_state["flash_reset"] = True
         close_reset_dialog()
@@ -372,6 +379,88 @@ with st.container(border=True):
 st.write("")
 
 
+# --- Ask PayGuard: an LLM agent that picks its own tools ------------------------------
+
+COPILOT_EXAMPLES = ["Review today's payments and protect me from fraud",
+                    "Why was the tent order flagged?", "Do I have any open disputes?"]
+copilot = Copilot(agent, get_toolkit())
+
+
+def show_step(i: int, step) -> None:
+    badge = (' <span class="pg-pill" style="color:#003087;background:#E0EAFF">PayPal Agent '
+             'Toolkit</span>' if step.via_toolkit else "")
+    args = ", ".join(f"{k}={v!r}" for k, v in step.args.items())
+    st.markdown(f"**{i}. 🔧 `{step.tool}`**`({html.escape(args)})`{badge}  \n"
+                f"<span class='pg-muted'>→ {html.escape(step_summary(step))}</span>",
+                unsafe_allow_html=True)
+
+
+def review_copilot_refund(cid: str) -> None:
+    st.session_state.update(selected=cid, refund_for=cid, refund_source="copilot")
+    st.session_state.pop("payments_table", None)   # a selected row would win over `selected`
+
+
+with st.container(border=True):
+    st.markdown("**💬 Ask PayGuard** <span class='pg-muted'>· an AI agent that chooses and calls "
+                "PayGuard and PayPal tools itself. It can propose refunds; only you can make "
+                "them.</span>", unsafe_allow_html=True)
+    ex_cols = st.columns(len(COPILOT_EXAMPLES))
+    clicked = next((q for i, (c, q) in enumerate(zip(ex_cols, COPILOT_EXAMPLES))
+                    if c.button(q, key=f"b_copilot_ex{i}", width="stretch", disabled=not groq_on)),
+                   None)
+    with st.form("copilot_form", border=False):
+        q_col, b_col = st.columns([5, 1], vertical_alignment="bottom")
+        typed = q_col.text_input("Ask PayGuard", max_chars=500, label_visibility="collapsed",
+                                 placeholder="Ask about your payments, or give an instruction…")
+        asked = b_col.form_submit_button("Ask", type="primary", width="stretch",
+                                         disabled=not groq_on)
+    if not groq_on:
+        st.caption("Set GROQ_API_KEY to use the agent.")
+    question = clicked or (typed.strip() if asked else "")
+    if question:
+        with st.status("PayGuard agent is working…", expanded=True) as status:
+            counter = iter(range(1, 100))
+            result = copilot.ask(question, on_step=lambda step: show_step(next(counter), step))
+            status.update(label=f"Done: {len(result.steps)} tool call(s)", state="complete",
+                          expanded=False)
+        st.session_state["copilot"] = result
+
+    if result := st.session_state.get("copilot"):
+        st.markdown(f"<span class='pg-muted'>You asked: {html.escape(result.question)}</span>",
+                    unsafe_allow_html=True)
+        st.markdown(f'<div class="pg-sentence">{html.escape(result.answer)}</div>',
+                    unsafe_allow_html=True)
+        st.caption(f"✨ Written by {groq_model} on Groq · every number checked against the tool "
+                   "results" if result.source == "llm"
+                   else "📝 Answer built from the tool results (the LLM's answer was missing or "
+                        "contained numbers no tool returned)")
+        if result.stopped:
+            st.caption(f"Stopped early: {result.stopped}.")
+        for prop in result.proposals:
+            current = ledger.get(prop.capture_id) or {}
+            done = current.get("decision") == "refund"
+            c1, c2 = st.columns([3.2, 1], vertical_alignment="center")
+            c1.markdown(f"↩️ **Refund ${prop.amount:,.2f}** · score {prop.score:.1f} "
+                        f"({LEVELS[prop.level]['label'].lower()} risk)  \n"
+                        f"<span class='pg-muted'>{html.escape(prop.reason)}</span>",
+                        unsafe_allow_html=True)
+            if c2.button("Refunded" if done else "Review & refund", width="stretch",
+                         key=f"b_copilot_refund_{prop.capture_id}", disabled=done):
+                review_copilot_refund(prop.capture_id)
+                st.rerun()
+        with st.expander(f"Agent steps ({len(result.steps)} tool call(s))",
+                         expanded=bool(result.steps)):
+            if not result.steps:
+                st.caption("The agent answered without calling a tool.")
+            for i, step in enumerate(result.steps, 1):
+                show_step(i, step)
+                st.json(step.result, expanded=False)
+        tools = "PayGuard tools" + (" + PayPal Agent Toolkit (" + ", ".join(TOOLKIT_TOOLS) + ")"
+                                    if copilot.uses_toolkit else "")
+        st.caption(f"Tools available to the agent: {tools}. No tool can move money.")
+st.write("")
+
+
 # --- payment list ---------------------------------------------------------------
 
 shown = [a for a in alerts if a.level in level_filter and (a.pending or not pending_only)]
@@ -433,6 +522,7 @@ if alert is None:  # default: the riskiest payment still waiting for a decision
 
 def close_refund_dialog():
     st.session_state.pop("refund_for", None)
+    st.session_state.pop("refund_source", None)
 
 
 # The dialog stays open while "refund_for" is set, so it survives full reruns.
@@ -445,7 +535,8 @@ def confirm_refund(a):
     c1, c2 = st.columns(2)
     if c1.button("Yes, refund", type="primary", width="stretch"):
         try:
-            res = agent.execute(a, "refund", seller_confirmed=True)
+            res = agent.execute(a, "refund", seller_confirmed=True,
+                                source=st.session_state.get("refund_source", "seller"))
             st.session_state["flash"] = f"Refund {res['refund_id']} completed on PayPal."
         except PayPalError as e:
             st.session_state["flash_error"] = (refund_failure_message(e), e.issue)

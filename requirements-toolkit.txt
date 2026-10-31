@@ -1,0 +1,8 @@
+# Official PayPal Agent Toolkit, installed WITHOUT its dependencies:
+#   pip install --no-deps -r requirements-toolkit.txt
+# Its package pins openai-agents==0.0.2, langchain==0.3.23 and crewai-tools==0.13.2
+# for its framework adapters. PayGuard only uses the framework-free layer
+# (paypal_agent_toolkit.shared), which needs requests, pydantic and httpx (in
+# requirements.txt). Without this package, Ask PayGuard runs without the
+# toolkit's tools.
+paypal-agent-toolkit==1.11.0

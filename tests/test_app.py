@@ -17,6 +17,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr("payguard.explain.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("payguard.copilot.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("payguard.copilot.toolkit_runner", lambda: None)
     led = Ledger()
     for i, h in enumerate(range(10, 14)):
         led.record_capture(_order(i, 30.0, f"2026-10-30T{h:02d}:00:00Z"),
@@ -190,3 +192,46 @@ def test_several_failed_plan_refunds_read_in_the_plural(app):
     next(b for b in app.button if b.label == "Yes, refund them").click().run()
     [w] = [w.value for w in app.warning if "could not be made" in w.value]
     assert w.startswith("2 refunds ($1,850.00) could not be made.") and "they stay" in w
+
+
+def _scripted_copilot(monkeypatch, *replies):
+    from tests.test_copilot import Script
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.setattr("payguard.explain.llm_complete", lambda *a, **k: None)
+    chat = Script(*replies)
+    monkeypatch.setattr("payguard.copilot.groq_chat", chat)
+    return chat
+
+
+def test_ask_payguard_shows_steps_and_refunds_only_after_confirmation(app, monkeypatch):
+    from tests.test_copilot import call, says, uses
+    _scripted_copilot(monkeypatch,
+                      uses(call("list_payments", which="flagged")),
+                      uses(call("get_payment_risk", capture_id="CAP9")),
+                      uses(call("prepare_refund", capture_id="CAP9", reason="Cross-border, 30.0x usual")),
+                      says("The $900.00 payment is 30.0x the median payment and cross-border; "
+                           "I prepared a refund for you to confirm."))
+    _clear_caches()
+    app.run()
+    app.button(key="b_copilot_ex0").click().run()
+    assert not app.exception
+    text = " ".join(m.value for m in app.markdown)
+    assert "The $900.00 payment is 30.0x" in text
+    assert "`list_payments`" in text and "`prepare_refund`" in text
+    assert any("every number checked against the tool results" in c.value for c in app.caption)
+    app.client.refund_capture.assert_not_called()          # proposed only
+
+    app.button(key="b_copilot_refund_CAP9").click().run()
+    assert not app.exception
+    app.client.refund_capture.assert_not_called()          # dialog, not a refund
+    next(b for b in app.button if b.label == "Yes, refund").click().run()
+    assert not app.exception
+    app.client.refund_capture.assert_called_once()
+    assert Ledger().decisions("CAP9")[-1]["source"] == "copilot"
+
+
+def test_ask_payguard_disabled_without_groq(app):
+    _clear_caches()
+    app.run()
+    assert app.button(key="b_copilot_ex0").disabled
+    assert any("Set GROQ_API_KEY" in c.value for c in app.caption)

@@ -27,7 +27,12 @@ about a minute to wake up.
 5. **Apply the plan.** Click **✅ Apply this plan**: approvals and monitors are
    recorded at once. A second dialog lists the refunds; click **Yes, refund
    them** to send them to PayPal (or **Not now**).
-6. **Buy something yourself.** Click **🛍️ Open demo shop**, pick an item, click
+6. **Ask the AI agent.** In **💬 Ask PayGuard**, click *Review today's payments
+   and protect me from fraud* (or type your own question, e.g. *Why was the
+   tent order flagged?*). Watch its steps: which tool it calls and what comes
+   back. It proposes refunds as buttons; nothing is refunded until you click
+   and confirm.
+7. **Buy something yourself.** Click **🛍️ Open demo shop**, pick an item, click
    the PayPal button and log in with the sandbox buyer account below. Go back
    to the dashboard: your payment appears by itself within a few seconds,
    scored, with a **✓ PayPal webhook** badge once PayPal's signed webhook is
@@ -57,7 +62,7 @@ time, their payments appear too. **Reset demo** gives you a clean start.
 | 3. An alert, explained | ![](docs/walkthrough/2_alert.png) |
 | 4. The agent's plan for the whole queue | ![](docs/walkthrough/3_agent_plan.png) |
 | 5. Refunds need a second confirmation | ![](docs/walkthrough/4_confirm_refunds.png) |
-| 6. The demo shop (PayPal buttons) | ![](docs/walkthrough/5_shop.png) |
+| 7. The demo shop (PayPal buttons) | ![](docs/walkthrough/5_shop.png) |
 | 1. Reset demo, with confirmation | ![](docs/walkthrough/6_reset.png) |
 
 If PayPal refuses a refund (for example when the sandbox seller's balance is
@@ -79,6 +84,12 @@ in the queue:
   refund, 2 to monitor, 6 to approve, estimated loss avoided: $2,415.14"), with
   numbers computed by the code and checked in the LLM's text; the seller
   applies it in one click and confirms refunds separately
+- **Ask PayGuard, an LLM agent with tools**: the seller asks a question or
+  gives an instruction in plain English; the agent (Groq function calling)
+  chooses and calls the tools itself: PayGuard's ledger, scores and SHAP
+  reasons, and the official **PayPal Agent Toolkit** (`get_order_details`,
+  `list_disputes`). Each step is shown. It can only *propose* refunds, and
+  every number in its answer is checked against the tool results
 - **PayGuard Demo Shop**: a real PayPal checkout (JavaScript SDK buttons,
   sandbox buyer account, Orders v2 created and captured on the server)
 - **Real-time PayPal webhooks**: `PAYMENT.CAPTURE.COMPLETED` and
@@ -98,12 +109,13 @@ in the queue:
 
 ## Installation
 
-Requires Python 3.10+.
+Requires Python 3.11+.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt        # the app
+pip install --no-deps -r requirements-toolkit.txt   # PayPal Agent Toolkit (see below)
 pip install -r requirements-dev.txt    # optional: tests and retraining
 cp .env.example .env                   # then fill in the values
 ```
@@ -233,16 +245,84 @@ Behaviour on the free plan:
 The app runs as one process and uses about 250 MB of RAM with the model
 loaded and a dashboard open, within the free plan's 512 MB.
 
+## Ask PayGuard: an LLM agent with tools
+
+The seller types a question or an instruction in **💬 Ask PayGuard** (or
+clicks an example). An LLM on Groq (`openai/gpt-oss-120b`, function calling)
+decides which tools to call, reads the results and answers in a few
+sentences. Code: `payguard/copilot.py`.
+
+| Tool | Source | What it returns |
+|---|---|---|
+| `list_payments` | PayGuard ledger | payments with amount, item, score, level, status, cross-border flag |
+| `get_payment_risk` | PayGuard model | score, level, proposed action and the SHAP reasons of one payment |
+| `get_order_details` | **PayPal Agent Toolkit** | the PayPal order: status, items, captures |
+| `list_disputes` | **PayPal Agent Toolkit** | disputes opened by buyers |
+| `prepare_refund` | PayGuard | a refund *proposal*: a button for the seller, no money moves |
+
+The dashboard shows every step live (tool, arguments, one-line result; the
+full result in the **Agent steps** panel), with a badge on the toolkit tools.
+
+**Guardrails**
+
+- **No tool moves money.** `prepare_refund` only adds a proposal. The refund
+  runs when the seller clicks **Review & refund** and then **Yes, refund** in
+  the same confirmation dialog as a manual refund; it is logged with the
+  source `copilot`.
+- **Allowlist.** The model only gets the five tools above. Any other tool name
+  (`pay_order`, `create_order`, `accept_dispute_claim`…) is refused without
+  running, and the toolkit wrapper itself refuses any method but
+  `get_order_details` and `list_disputes`.
+- **Limits.** At most 6 model calls and 10 tool calls per question, 5 refund
+  proposals, 20 s per toolkit call. On the last step the tools are withdrawn
+  so the model must answer.
+- **Numbers checked**, as for the explanations: every number in the answer
+  must appear in the question or in a tool result, and the answer may only
+  say a refund is prepared if `prepare_refund` really proposed one. Otherwise
+  the model gets one retry with the problem spelled out, then a template answer
+  built from the tool results is shown. The UI says which of the two you see.
+- **No country, no names.** Tool results never contain the payer's country,
+  name or email (orders from the toolkit are stripped of payer and shipping
+  data), only a cross-border flag. Tool results are passed as data, and the
+  model is told not to follow instructions found in them.
+- **Rate limits.** Groq's free tier allows 8,000 tokens per minute; on HTTP 429
+  the agent waits as long as Groq asks (at most 8 s) and retries twice.
+
+**Why the toolkit is installed with `--no-deps`.** We checked PayPal's
+documentation and the package: `paypal-agent-toolkit` 1.11.0 (Python ≥ 3.11)
+ships adapters for the OpenAI Agents SDK, LangChain, CrewAI and Bedrock, and
+pins `openai-agents==0.0.2`, `langchain==0.3.23` and `crewai-tools==0.13.2`.
+PayGuard uses none of those frameworks: it calls the toolkit's framework-free
+layer (`paypal_agent_toolkit.shared.api.PayPalAPI`, which needs only
+`requests`, `pydantic` and `httpx`) from its own Groq function-calling loop.
+Installing it without dependencies keeps the image small enough for Render's
+free plan. The toolkit has no tool to refund an order capture, so refunds stay
+on PayGuard's own client, behind the seller's confirmation. Without the
+package, Ask PayGuard still works with PayGuard's tools only.
+
+**Seen on the real sandbox:** *Review today's payments and protect me from
+fraud* → `list_payments`, `get_payment_risk` ×2, `prepare_refund` ×2, and two
+refund buttons; *Why was the tent order flagged?* → `list_payments`,
+`get_payment_risk`, answer from the SHAP reasons ("5.0x the median payment of
+the last 24 hours and cross-border"); *Do I have any open disputes?* →
+`list_disputes` (toolkit); *Show me the PayPal order of the tent purchase* →
+`get_order_details` (toolkit).
+
 ## Tests
 
 ```bash
-pytest -q                               # offline: client, model, explanations, agent, shop, webhooks, UI
+pytest -q                               # offline: client, model, explanations, agent, Ask PayGuard, shop, webhooks, UI
 python scripts/paypal_smoke_test.py     # live sandbox: auth, order, capture, refund
 ```
 
 The UI tests drive `app.py` headlessly with Streamlit's `AppTest`, using mocked
 PayPal and Groq clients. They check, for example, that a refund never reaches
-PayPal before the seller confirms, including refunds in an agent plan. The shop
+PayPal before the seller confirms, including refunds in an agent plan and
+refunds proposed by Ask PayGuard. `tests/test_copilot.py` scripts the LLM's
+tool calls to check each guardrail: no refund without confirmation, unknown
+or money-moving tools refused, step and tool-call limits, invented numbers and
+false "refund prepared" claims rejected, no country or payer data in tool
+results, and the toolkit still offering the methods PayGuard calls. The shop
 and webhook routes are tested over HTTP (forged, unverifiable and duplicate
 webhooks, amounts changed after approval), and `tests/test_server.py` starts
 `server.py` as the Dockerfile does and checks that one port serves the
@@ -289,6 +369,7 @@ dashboard, the shop and the webhook.
 | `payguard/risk.py` | loads the model, turns probabilities into 0–100 scores and levels |
 | `payguard/explain.py` | SHAP reasons, Groq sentences, number check, templates |
 | `payguard/agent.py` | proposals per payment and for the whole queue; executes only on seller confirmation |
+| `payguard/copilot.py` | Ask PayGuard: Groq function-calling loop, tool allowlist, PayPal Agent Toolkit wrapper, guardrails |
 | `payguard/simulate.py` | creates the demo sandbox payments |
 | `scripts/` | dataset download, training, PayPal smoke test, webhook registration |
 
@@ -346,8 +427,9 @@ to monitor, 6 to approve. Estimated loss avoided: $2,645.02."*
   leaves them in the queue. Payments decided since the plan was made are left
   alone, and one PayPal failure does not stop the others.
 - **Every decision is logged** in the `decisions` table with its source:
-  `seller` (manual), `agent_plan` (approved plan) or `paypal` (refunded
-  directly in PayPal, seen by webhook). The decision history of each payment
+  `seller` (manual), `agent_plan` (approved plan), `copilot` (proposed by Ask
+  PayGuard, confirmed by the seller) or `paypal` (refunded directly in PayPal,
+  seen by webhook). The decision history of each payment
   shows it.
 
 ## Risk model
@@ -461,6 +543,10 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   country.
 - **LLM sentences** can still be awkward or vague. The number check only
   guarantees that they contain no number absent from the model's reasons.
+- **Ask PayGuard** can pick the wrong tools or miss a payment, and the number
+  check cannot tell whether a correct number is attached to the right payment.
+  It only proposes; the seller decides. On Groq's free tier, several questions
+  in a row can be slowed down by the tokens-per-minute limit.
 
 This is a hackathon prototype trained on synthetic data. It is not a production
 fraud model.
