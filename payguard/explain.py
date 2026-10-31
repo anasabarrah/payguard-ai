@@ -112,8 +112,8 @@ LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV
 NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW
 SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO
 TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW UK
-""".split()) - {"AI"}   # "AI" is far more likely to mean the technology
-_COUNTRY_WORDS = re.compile(r"\b(" + "|".join("""
+""".split()) - {"AI", "ID", "TV"}   # far more likely "AI", "order ID", "TV" than a country
+_COUNTRY_WORDS = re.compile(r"\b(" + "|".join(r"""
 afghan\w* albania\w* algeria\w* argentin\w* australia\w* austria\w* bangladesh\w* belgi\w*
 brazil\w* britain british canad\w* chile\w* china chinese colombia\w* egypt\w* england english
 france french german\w* ghana\w* greece greek india\w* indonesia\w* iran\w* iraq\w* ireland irish

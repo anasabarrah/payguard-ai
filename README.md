@@ -90,6 +90,11 @@ in the queue:
   reasons, and the official **PayPal Agent Toolkit** (`get_order_details`,
   `list_disputes`). Each step is shown. It can only *propose* refunds, and
   every number in its answer is checked against the tool results
+- **Dispute assistant** (PayPal Disputes API): open disputes with their status
+  and deadline, linked to the disputed payment; a summary, an evidence
+  checklist and a checked draft response that the seller edits, then confirms
+  before PayGuard sends it to PayPal. Ask PayGuard can prepare it too
+  (*Help me answer my open dispute*)
 - **PayGuard Demo Shop**: a real PayPal checkout (JavaScript SDK buttons,
   sandbox buyer account, Orders v2 created and captured on the server)
 - **Real-time PayPal webhooks**: `PAYMENT.CAPTURE.COMPLETED` and
@@ -258,6 +263,8 @@ sentences. Code: `payguard/copilot.py`.
 | `get_payment_risk` | PayGuard model | score, level, proposed action and the SHAP reasons of one payment |
 | `get_order_details` | **PayPal Agent Toolkit** | the PayPal order: status, items, captures |
 | `list_disputes` | **PayPal Agent Toolkit** | disputes opened by buyers |
+| `get_dispute_case` | PayGuard (Disputes API) | one dispute: claim, stage, deadline, disputed payment, evidence checklist |
+| `draft_dispute_reply` | PayGuard | a checked draft response (see [Dispute assistant](#dispute-assistant)); sends nothing |
 | `prepare_refund` | PayGuard | a refund *proposal*: a button for the seller, no money moves |
 
 The dashboard shows every step live (tool, arguments, one-line result; the
@@ -265,16 +272,19 @@ full result in the **Agent steps** panel), with a badge on the toolkit tools.
 
 **Guardrails**
 
-- **No tool moves money.** `prepare_refund` only adds a proposal. The refund
-  runs when the seller clicks **Review & refund** and then **Yes, refund** in
-  the same confirmation dialog as a manual refund; it is logged with the
-  source `copilot`.
-- **Allowlist.** The model only gets the five tools above. Any other tool name
-  (`pay_order`, `create_order`, `accept_dispute_claim`…) is refused without
+- **No tool moves money or sends anything.** `prepare_refund` only adds a
+  proposal. The refund runs when the seller clicks **Review & refund** and
+  then **Yes, refund** in the same confirmation dialog as a manual refund; it
+  is logged with the source `copilot`. A dispute draft goes to the
+  **⚖️ Disputes** panel (**Review & edit**), where the seller edits and sends
+  it. An answer claiming that a response was sent is rejected.
+- **Allowlist.** The model only gets the seven tools above. Any other tool name
+  (`pay_order`, `create_order`, `accept_dispute_claim`, `send_dispute_message`…)
+  is refused without
   running, and the toolkit wrapper itself refuses any method but
   `get_order_details` and `list_disputes`.
 - **Limits.** At most 6 model calls and 10 tool calls per question, 5 refund
-  proposals, 20 s per toolkit call. On the last step the tools are withdrawn
+  proposals, 3 dispute drafts, 20 s per toolkit call. On the last step the tools are withdrawn
   so the model must answer.
 - **Numbers checked**, as for the explanations: every number in the answer
   must appear in the question or in a tool result, and the answer may only
@@ -308,10 +318,78 @@ the last 24 hours and cross-border"); *Do I have any open disputes?* →
 `list_disputes` (toolkit); *Show me the PayPal order of the tent purchase* →
 `get_order_details` (toolkit).
 
+## Dispute assistant
+
+The **⚖️ Disputes** panel (below Ask PayGuard; also shown on an empty ledger)
+reads the seller's disputes from the PayPal Disputes API v1 (`payguard/disputes.py`):
+
+- **Open disputes**: claim, status, stage, amount and **respond-by date**
+  (with the days left), the most urgent first, and the disputed payment from
+  the ledger (PayPal's `seller_transaction_id` is the capture id) with its
+  risk level. **↻ Refresh** reloads them from PayPal.
+- **Summary** of the case and an **evidence checklist** for its reason: what
+  PayGuard already has (invoice: order, item, amount, date; the messages in
+  the dispute) and what the seller must gather (tracking number, delivery
+  confirmation, listing, photos, return policy…). Evidence that PayPal
+  requested is marked.
+- **Draft response**: **✨ Draft a response** writes it with Groq from the
+  case facts. As for the explanations, every number must come from those
+  facts and no country may be named. PayGuard does not know how the order was
+  shipped, so anything it cannot know stays a `[placeholder]` (tracking
+  number, carrier, dates, your name). A draft that claims something is
+  attached is rejected, since only text is sent. The missing evidence goes to
+  the summary, never into the reply. The payment's risk score is never given
+  to the draft (it is shown to the seller only), and the buyer's messages are
+  passed as quoted data, not instructions. Otherwise a template is used.
+- **Sending, only after confirmation.** The seller edits the text in place.
+  **📨 Review and send…** stays disabled while a `[placeholder]` is left, the
+  text is empty or longer than 2,000 characters, or PayPal offers no way to
+  answer. It opens a dialog showing the exact text and where it goes, and
+  only **Yes, send to PayPal** sends it. PayGuard re-reads the dispute first
+  and uses what PayPal allows at that moment:
+  - `send-message`: a message to the buyer, at the **inquiry** stage;
+  - `provide-evidence`: notes for PayPal's review while the status is
+    **waiting for your response** (after escalation to a claim), as proof of
+    fulfillment when the seller adds a carrier and tracking number.
+
+  Every response sent is logged in the `dispute_responses` table (what was
+  sent, when, and whether it was the LLM's draft, a template, edited by the
+  seller or written from scratch).
+
+### Test a dispute in the sandbox
+
+A dispute is opened by the **buyer**, on a payment made with their PayPal
+account (the shop), not on the simulator's card payments.
+
+1. **Pay as the buyer.** In the [demo shop](https://payguard-ai-1p86.onrender.com/shop/),
+   buy an item with the sandbox buyer account.
+2. **Open the dispute.** Go to <https://www.sandbox.paypal.com>, log in with the
+   same buyer account, open **Activity**, click the payment, then **Report a
+   problem** (or open the **Resolution Center** and **Report a problem**).
+   Choose **I didn't receive an item I bought** (or *item is significantly not
+   as described*), and submit with a short message to the seller. This opens
+   an **inquiry**: status *waiting for your response*.
+3. **See it in PayGuard.** In the dashboard, **⚖️ Disputes → ↻ Refresh**. It
+   can take a few minutes for the sandbox to list a new dispute.
+4. **Answer it.** **✨ Draft a response**, fill in the placeholders, edit,
+   **📨 Review and send…**, then **Yes, send to PayPal**. At the inquiry stage
+   this is a message to the buyer: log in as the buyer again to read it in the
+   Resolution Center. Or ask **💬 Ask PayGuard**: *Help me answer my open
+   dispute*, then **Review & edit**.
+5. **Optional: the claim stage.** As the buyer, **escalate** the inquiry to a
+   claim from the Resolution Center. The sandbox then puts it *under review*.
+   Move it to the seller's turn and answer with evidence:
+
+   ```bash
+   python scripts/sandbox_dispute.py                          # list
+   python scripts/sandbox_dispute.py require-evidence PP-D-…  # under review -> waiting for your response
+   python scripts/sandbox_dispute.py adjudicate PP-D-… seller # settle it (sandbox only)
+   ```
+
 ## Tests
 
 ```bash
-pytest -q                               # offline: client, model, explanations, agent, Ask PayGuard, shop, webhooks, UI
+pytest -q                               # offline: client, model, explanations, agent, Ask PayGuard, disputes, shop, webhooks, UI
 python scripts/paypal_smoke_test.py     # live sandbox: auth, order, capture, refund
 ```
 
@@ -322,7 +400,14 @@ refunds proposed by Ask PayGuard. `tests/test_copilot.py` scripts the LLM's
 tool calls to check each guardrail: no refund without confirmation, unknown
 or money-moving tools refused, step and tool-call limits, invented numbers and
 false "refund prepared" claims rejected, no country or payer data in tool
-results, and the toolkit still offering the methods PayGuard calls. The shop
+results, and the toolkit still offering the methods PayGuard calls.
+`tests/test_disputes.py` checks that nothing is sent without confirmation or
+with a placeholder left, that PayPal's current state picks the action
+(message or evidence, with tracking when given), that drafts with an invented
+number, a country or a claimed attachment fall back to the template, that the
+draft gets no country, identity or risk score, and that Ask PayGuard drafts
+but never sends; the UI tests send a dispute response only after **Yes, send
+to PayPal**. The shop
 and webhook routes are tested over HTTP (forged, unverifiable and duplicate
 webhooks, amounts changed after approval), and `tests/test_server.py` starts
 `server.py` as the Dockerfile does and checks that one port serves the
@@ -370,8 +455,9 @@ dashboard, the shop and the webhook.
 | `payguard/explain.py` | SHAP reasons, Groq sentences, number check, templates |
 | `payguard/agent.py` | proposals per payment and for the whole queue; executes only on seller confirmation |
 | `payguard/copilot.py` | Ask PayGuard: Groq function-calling loop, tool allowlist, PayPal Agent Toolkit wrapper, guardrails |
+| `payguard/disputes.py` | dispute assistant: open cases, evidence checklist, checked draft, sending after confirmation |
 | `payguard/simulate.py` | creates the demo sandbox payments |
-| `scripts/` | dataset download, training, PayPal smoke test, webhook registration |
+| `scripts/` | dataset download, training, PayPal smoke test, webhook registration, sandbox dispute stages |
 
 ## Explanations
 
@@ -554,6 +640,13 @@ Accuracy is not reported: with 0.2–2.6% fraud, it is meaningless.
   check cannot tell whether a correct number is attached to the right payment.
   It only proposes; the seller decides. On Groq's free tier, several questions
   in a row can be slowed down by the tokens-per-minute limit.
+- **Dispute drafts** are a starting point. The checks catch invented numbers,
+  countries and claimed attachments, but the LLM can still state something the
+  seller has not confirmed (for example that a signature was collected): the
+  seller must read every sentence. PayGuard sends text only, no documents, and
+  does not accept claims or make offers. The flow was tested against the
+  sandbox API and with mocked disputes; the account had no dispute while it
+  was built, so sending to a real sandbox dispute is still to be checked.
 
 This is a hackathon prototype trained on synthetic data. It is not a production
 fraud model.

@@ -170,6 +170,7 @@ def test_names_country_detects_countries(text):
     "This is the first payment from this payer; it is a domestic payment.",
     "PayGuard AI flags it in the SHAP reasons, so hold it in your queue.",
     "Monitor it: in doubt, wait before shipping.",
+    "The tent purchase, PayPal order ID 5RM13586NU013182A, was paid on 2026-10-31.",
 ])
 def test_names_country_allows_neutral_sentences(text):
     assert not ex.names_country(text)

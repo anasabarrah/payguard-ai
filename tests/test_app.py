@@ -246,3 +246,69 @@ def test_country_only_in_the_table(app):
     detail = " ".join(m.value for m in app.markdown if "pg-amount" in m.value or "pg-reason" in m.value)
     assert "$900.00" in detail and "This is a cross-border payment" in detail
     assert "DE" not in detail and "🇩🇪" not in detail and "payer in" not in detail
+
+
+def _with_dispute(app, **kw):
+    from tests.test_disputes import dispute
+    app.client.list_disputes.return_value = [{"dispute_id": "PP-D-4242",
+                                              "status": "WAITING_FOR_SELLER_RESPONSE"}]
+    app.client.get_dispute.side_effect = lambda did: dispute(did, **kw)
+
+
+def test_dispute_is_drafted_edited_and_sent_only_after_confirmation(app):
+    _with_dispute(app)
+    _clear_caches()
+    app.run()
+    assert not app.exception
+    table = next(df.value for df in app.dataframe if "Dispute" in df.value.columns)
+    assert table["Claim"].tolist() == ["item not received"]
+    assert table["Payment"].tolist() == ["$900.00 · high risk"]
+
+    app.button(key="b_dispute_draft_PP-D-4242").click().run()     # template: no GROQ key
+    text = app.text_area(key="dispute_text_PP-D-4242")
+    assert "[tracking number]" in text.value
+    assert app.button(key="b_dispute_send_PP-D-4242").disabled    # placeholders left
+    assert any("Fill in or delete the placeholders" in c.value for c in app.caption)
+
+    text.input("Hello, your tent was shipped with USPS on Oct 31. Best regards, Sam").run()
+    app.button(key="b_dispute_send_PP-D-4242").click().run()
+    assert not app.exception
+    app.client.send_dispute_message.assert_not_called()          # dialog only
+    next(b for b in app.button if b.label == "Yes, send to PayPal").click().run()
+    assert not app.exception
+    app.client.send_dispute_message.assert_called_once_with(
+        "PP-D-4242", "Hello, your tent was shipped with USPS on Oct 31. Best regards, Sam")
+    sent = Ledger().dispute_responses("PP-D-4242")
+    assert [r["drafted_by"] for r in sent] == ["template, edited by seller"]
+
+
+def test_dispute_without_a_possible_response_cannot_be_sent(app):
+    _with_dispute(app, status="UNDER_REVIEW", actions=())
+    _clear_caches()
+    app.run()
+    app.text_area(key="dispute_text_PP-D-4242").input("Hello").run()
+    assert app.button(key="b_dispute_send_PP-D-4242").disabled
+    assert any("does not accept a response" in c.value for c in app.caption)
+
+
+def test_no_dispute_message(app):
+    _clear_caches()
+    app.run()
+    assert any("No open dispute" in c.value for c in app.caption)
+
+
+def test_ask_payguard_hands_the_dispute_draft_to_the_panel(app, monkeypatch):
+    from tests.test_copilot import call, says, uses
+    _with_dispute(app)
+    _scripted_copilot(monkeypatch,
+                      uses(call("list_disputes")),
+                      uses(call("draft_dispute_reply", dispute_id="PP-D-4242")),
+                      says("I drafted a reply to the item-not-received dispute; review it below."))
+    _clear_caches()
+    app.run()
+    assert app.button(key="b_copilot_ex2").label == "Help me answer my open dispute"
+    app.button(key="b_copilot_ex2").click().run()
+    assert not app.exception
+    app.button(key="b_copilot_draft_PP-D-4242").click().run()
+    assert "[tracking number]" in app.text_area(key="dispute_text_PP-D-4242").value
+    app.client.send_dispute_message.assert_not_called()

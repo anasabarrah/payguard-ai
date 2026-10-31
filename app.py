@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import html
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 
 from payguard.agent import PayGuardAgent, QueuePlan
 from payguard.copilot import TOOLKIT_TOOLS, Copilot, step_summary, toolkit_runner
+from payguard.disputes import ACTION_LABELS as DISPUTE_ACTIONS
+from payguard.disputes import (CARRIERS, checklist, draft_response, open_cases, response_problem,
+                               send_response, template_summary)
 from payguard.explain import DEFAULT_GROQ_MODEL
 from payguard.ledger import Ledger
 from payguard.paypal_client import PayPalClient, PayPalError, refund_failure_message
@@ -246,10 +249,172 @@ for a in alerts[:min(announce, 3)]:
     st.toast(f"New PayPal payment: ${a.payment['amount']:,.2f} · score {a.score:.1f} "
              f"({LEVELS[a.level]['label'].lower()} risk)", icon="💳")
 
+# --- disputes: summary, evidence checklist, draft the seller edits and confirms ---------
+
+def load_disputes(force: bool = False) -> tuple[list, str]:
+    """Open disputes from PayPal, kept for the session until the seller refreshes."""
+    if paypal is None:
+        return [], "PayPal is not connected."
+    if force or "disputes" not in st.session_state:
+        try:
+            st.session_state["disputes"] = (open_cases(paypal, ledger), "")
+        except PayPalError as e:
+            st.session_state["disputes"] = ([], f"PayPal could not list disputes ({e.issue}).")
+    return st.session_state["disputes"]
+
+
+def deadline(case) -> str:
+    days = case.days_left()
+    if days is None:
+        return "no deadline given"
+    when_ = case.due[:10]
+    return (f"{when_} · overdue" if days < 0 else f"{when_} · today" if days == 0
+            else f"{when_} · in {days} day{'s' if days != 1 else ''}")
+
+
+def close_dispute_dialog():
+    st.session_state.pop("dispute_send", None)
+
+
+@st.dialog("Send this response to PayPal?", on_dismiss=close_dispute_dialog)
+def confirm_dispute_send(case, text: str, drafted_by: str, carrier: str | None,
+                         tracking: str | None):
+    st.write(f"**{DISPUTE_ACTIONS[case.respond_action]}** · dispute `{case.dispute_id}`")
+    st.text(text)
+    if tracking:
+        st.caption(f"With proof of fulfillment: {carrier}, tracking number {tracking}.")
+    st.caption("This sends your text to the PayPal sandbox exactly as shown. It cannot be "
+               "edited or withdrawn afterwards.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, send to PayPal", type="primary", width="stretch"):
+        try:
+            action = send_response(paypal, ledger, case.dispute_id, text, confirmed=True,
+                                   drafted_by=drafted_by, carrier=carrier, tracking=tracking)
+            st.session_state["dispute_flash"] = f"Sent to PayPal: {DISPUTE_ACTIONS[action].lower()}."
+            st.session_state.pop("disputes", None)        # reload PayPal's new status
+        except PayPalError as e:
+            st.session_state["dispute_flash_error"] = f"PayPal refused it ({e.short})."
+        except ValueError as e:
+            st.session_state["dispute_flash_error"] = str(e)
+        close_dispute_dialog()
+        st.rerun()
+    if c2.button("Cancel", width="stretch"):
+        close_dispute_dialog()
+        st.rerun()
+
+
+def disputes_panel(alerts_by_capture: dict) -> None:
+    with st.container(border=True):
+        head, btn = st.columns([4, 1], vertical_alignment="center")
+        head.markdown("**⚖️ Disputes** <span class='pg-muted'>· open PayPal disputes, a summary, "
+                      "the evidence to gather and a draft response. Nothing is sent to PayPal "
+                      "until you edit, review and confirm it.</span>", unsafe_allow_html=True)
+        refresh = btn.button("↻ Refresh", key="b_disputes_refresh", width="stretch",
+                             disabled=paypal is None)
+        cases, error = load_disputes(force=refresh)
+        if msg := st.session_state.pop("dispute_flash", None):
+            st.success(msg, icon="✅")
+        if msg := st.session_state.pop("dispute_flash_error", None):
+            st.warning(msg, icon="ℹ️")
+        if error:
+            st.warning(error, icon="ℹ️")
+        if not cases:
+            st.caption("No open dispute. To try it, open one as the sandbox buyer from PayPal's "
+                       "Resolution Center (see the README), then click ↻ Refresh.")
+            return
+
+        def linked(c):
+            a = alerts_by_capture.get(c.capture_id)
+            if a is None:
+                return "not in ledger"
+            return f"${a.payment['amount']:,.2f} · {LEVELS[a.level]['label'].lower()} risk"
+        st.dataframe(pd.DataFrame({
+            "Dispute": [c.dispute_id for c in cases],
+            "Claim": [c.reason_text for c in cases],
+            "Status": [c.status_text for c in cases],
+            "Stage": [c.stage.replace("_", " ").lower() for c in cases],
+            "Amount": [f"${c.amount:,.2f}" for c in cases],
+            "Respond by": [deadline(c) for c in cases],
+            "Payment": [linked(c) for c in cases],
+        }), hide_index=True, width="stretch")
+
+        ids = [c.dispute_id for c in cases]
+        if st.session_state.get("dispute_open") not in ids:
+            st.session_state["dispute_open"] = ids[0]
+        did = st.selectbox("Open a dispute", ids, key="dispute_open",
+                           format_func=lambda i: next(f"{c.dispute_id} · {c.reason_text} · "
+                                                      f"${c.amount:,.2f}" for c in cases
+                                                      if c.dispute_id == i))
+        case = next(c for c in cases if c.dispute_id == did)
+        draft = st.session_state.get(f"dispute_draft_{did}")
+
+        st.markdown(f'<div class="pg-sentence">{html.escape(draft.summary if draft else template_summary(case))}</div>',
+                    unsafe_allow_html=True)
+        a = alerts_by_capture.get(case.capture_id)
+        if a is not None:
+            st.caption(f"For you only, never put in the response: PayGuard scored this payment "
+                       f"{a.score:.1f} ({a.level} risk).")
+
+        st.markdown('<div class="pg-section">Evidence to gather</div>', unsafe_allow_html=True)
+        for item in checklist(case):
+            tag = " · **requested by PayPal**" if item.requested else ""
+            st.markdown(f"{'✅' if item.have else '⬜'} **{html.escape(item.label)}**{tag}  \n"
+                        f"<span class='pg-muted'>{html.escape(item.detail)}</span>",
+                        unsafe_allow_html=True)
+        if case.messages:
+            with st.expander(f"Messages in the dispute ({len(case.messages)})"):
+                for m in case.messages:
+                    st.markdown(f"**{m['posted_by'].title()}** · {m['time'][:16].replace('T', ' ')}")
+                    st.text(m["content"])
+
+        st.markdown('<div class="pg-section">Your response</div>', unsafe_allow_html=True)
+        text_key = f"dispute_text_{did}"
+        if st.button("✨ Regenerate the draft" if draft else "✨ Draft a response",
+                     key=f"b_dispute_draft_{did}"):
+            with st.spinner("Writing a draft…"):
+                draft = draft_response(case, use_llm=groq_on)
+            st.session_state[f"dispute_draft_{did}"] = draft
+            st.session_state[text_key] = draft.reply
+            st.rerun()
+        text = st.text_area("Edit before sending", key=text_key, height=230, max_chars=2000,
+                            placeholder="Click ✨ Draft a response, or write your own.")
+        if draft:
+            st.caption((f"✨ Draft written by {groq_model} on Groq · every number checked against "
+                        "the dispute's facts" if draft.source == "llm" else
+                        "📝 Template draft (LLM unavailable or not grounded)")
+                       + " · Check every statement: PayGuard does not know how the order was "
+                         "shipped, and nothing can be attached.")
+        carrier = tracking = None
+        action = case.respond_action
+        if action == "provide-evidence":
+            c1, c2 = st.columns([1, 2])
+            carrier = c1.selectbox("Carrier", CARRIERS, key=f"dispute_carrier_{did}")
+            tracking = c2.text_input("Tracking number (optional)", key=f"dispute_tracking_{did}")
+        problem = response_problem(text or "")
+        if action is None:
+            st.caption(f"PayPal does not accept a response on this dispute now "
+                       f"({case.status_text}).")
+        elif problem:
+            st.caption(f"⚠️ {problem}")
+        else:
+            st.caption(f"Will be sent as: {DISPUTE_ACTIONS[action].lower()}.")
+        if st.button("📨 Review and send…", type="primary", key=f"b_dispute_send_{did}",
+                     disabled=bool(problem) or action is None or paypal is None):
+            st.session_state["dispute_send"] = did
+        if st.session_state.get("dispute_send") == did and action and not problem:
+            by = ("seller" if draft is None else draft.source if text.strip() == draft.reply.strip()
+                  else f"{draft.source}, edited by seller")
+            confirm_dispute_send(case, text.strip(), by, carrier, tracking)
+        for r in ledger.dispute_responses(did):
+            st.caption(f"Sent {r['sent_at'][:16].replace('T', ' ')} UTC · {r['action']} · "
+                       f"drafted by {r['drafted_by']}")
+
+
 if not alerts:
     st.info("No payments yet. Click **⚡ Simulate payments** in the sidebar to create sandbox "
             "payments, or buy something in the [demo shop](/shop/) with a PayPal sandbox buyer "
             "account.")
+    disputes_panel({})
     st.stop()
 
 pending = [a for a in alerts if a.pending]
@@ -382,7 +547,7 @@ st.write("")
 # --- Ask PayGuard: an LLM agent that picks its own tools ------------------------------
 
 COPILOT_EXAMPLES = ["Review today's payments and protect me from fraud",
-                    "Why was the tent order flagged?", "Do I have any open disputes?"]
+                    "Why was the tent order flagged?", "Help me answer my open dispute"]
 copilot = Copilot(agent, get_toolkit())
 
 
@@ -448,6 +613,17 @@ with st.container(border=True):
                          key=f"b_copilot_refund_{prop.capture_id}", disabled=done):
                 review_copilot_refund(prop.capture_id)
                 st.rerun()
+        for d in result.drafts:
+            c1, c2 = st.columns([3.2, 1], vertical_alignment="center")
+            c1.markdown(f"⚖️ **Draft response for dispute {html.escape(d.dispute_id)}**  \n"
+                        f"<span class='pg-muted'>{html.escape(d.summary)}</span>",
+                        unsafe_allow_html=True)
+            if c2.button("Review & edit", width="stretch", key=f"b_copilot_draft_{d.dispute_id}"):
+                st.session_state.update({"dispute_open": d.dispute_id,
+                                         f"dispute_draft_{d.dispute_id}": d,
+                                         f"dispute_text_{d.dispute_id}": d.reply})
+                st.toast("Draft loaded in the ⚖️ Disputes panel below: edit it, then send.",
+                         icon="⚖️")
         with st.expander(f"Agent steps ({len(result.steps)} tool call(s))",
                          expanded=bool(result.steps)):
             if not result.steps:
@@ -457,7 +633,10 @@ with st.container(border=True):
                 st.json(step.result, expanded=False)
         tools = "PayGuard tools" + (" + PayPal Agent Toolkit (" + ", ".join(TOOLKIT_TOOLS) + ")"
                                     if copilot.uses_toolkit else "")
-        st.caption(f"Tools available to the agent: {tools}. No tool can move money.")
+        st.caption(f"Tools available to the agent: {tools}. No tool can move money or send "
+                   "anything to PayPal.")
+st.write("")
+disputes_panel({a.capture_id: a for a in alerts})
 st.write("")
 
 

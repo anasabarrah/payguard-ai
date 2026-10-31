@@ -166,6 +166,46 @@ class PayPalClient:
             "op": "replace", "path": "/event_types", "value": [{"name": n} for n in events],
         }])
 
+    # --- disputes (v1) ------------------------------------------------------
+    def list_disputes(self, page_size: int = 20) -> list[dict]:
+        """Disputes of this seller, newest first, with a summary of each."""
+        return self._request("GET", "/v1/customer/disputes",
+                             params={"page_size": page_size}).get("items", [])
+
+    def get_dispute(self, dispute_id: str) -> dict:
+        return self._request("GET", f"/v1/customer/disputes/{dispute_id}")
+
+    def send_dispute_message(self, dispute_id: str, message: str) -> dict:
+        """Message the buyer. PayPal allows it only in the INQUIRY stage."""
+        return self._request("POST", f"/v1/customer/disputes/{dispute_id}/send-message",
+                             json={"message": message})
+
+    def provide_dispute_evidence(self, dispute_id: str, evidences: list[dict]) -> dict:
+        """Submit evidence (multipart, JSON in the `input` part). Only while the dispute is
+        WAITING_FOR_SELLER_RESPONSE."""
+        payload = json.dumps({"evidences": evidences})
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/v1/customer/disputes/{dispute_id}/provide-evidence",
+                headers={"Authorization": f"Bearer {self.get_access_token()}"},
+                files={"input": ("input.json", payload, "application/json")},
+                timeout=self.timeout)
+        except requests.RequestException as e:
+            raise PayPalError(503, {"name": "PAYPAL_UNREACHABLE", "message": str(e)}) from e
+        if resp.status_code >= 400:
+            raise PayPalError(resp.status_code, _body(resp))
+        return resp.json() if resp.content else {}
+
+    def require_dispute_evidence(self, dispute_id: str, action: str = "SELLER_EVIDENCE") -> dict:
+        """Sandbox only: move an UNDER_REVIEW dispute to WAITING_FOR_SELLER/BUYER_RESPONSE."""
+        return self._request("POST", f"/v1/customer/disputes/{dispute_id}/require-evidence",
+                             json={"action": action})
+
+    def adjudicate_dispute(self, dispute_id: str, outcome: str) -> dict:
+        """Sandbox only: settle an UNDER_REVIEW dispute (BUYER_FAVOR or SELLER_FAVOR)."""
+        return self._request("POST", f"/v1/customer/disputes/{dispute_id}/adjudicate",
+                             json={"adjudication_outcome": outcome})
+
     # --- reporting --------------------------------------------------------
     def can_search_transactions(self) -> bool:
         """True once 'Transaction search' is enabled for the app and reflected in the token."""

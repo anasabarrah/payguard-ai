@@ -8,12 +8,15 @@ Tools, and nothing else (TOOLS is an allowlist):
   list_payments      PayGuard ledger: payments with score, level, status
   get_payment_risk   score, level, proposal and SHAP reasons of one payment
   get_order_details  PayPal Agent Toolkit: the PayPal order (items, status)
-  list_disputes      PayPal Agent Toolkit: open disputes on the account
+  list_disputes      PayPal Agent Toolkit: disputes on the account
+  get_dispute_case   one dispute: claim, deadline, linked payment, evidence checklist
+  draft_dispute_reply  a checked draft response (see payguard/disputes.py); sends nothing
   prepare_refund     proposes a refund; it moves no money
 
 Guardrails:
-  - no tool moves money: prepare_refund only adds a proposal, and the refund
-    runs when the seller clicks it and confirms (`PayGuardAgent.execute`)
+  - no tool moves money or sends anything: prepare_refund only adds a proposal
+    (the refund runs when the seller clicks it and confirms), and a dispute
+    draft is only shown to the seller, who edits it and confirms the sending
   - at most MAX_STEPS model calls and MAX_TOOL_CALLS tool calls per question
   - every number in the answer must appear in the question or in a tool result,
     and it may only say a refund is prepared if prepare_refund really proposed
@@ -35,6 +38,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
+from payguard import disputes
 from payguard.agent import Alert, PayGuardAgent
 from payguard.explain import DEFAULT_GROQ_MODEL, GROQ_URL, describe, names_country, numbers_in
 from payguard.features import is_cross_border
@@ -42,6 +46,7 @@ from payguard.features import is_cross_border
 MAX_STEPS = 6
 MAX_TOOL_CALLS = 10
 MAX_REFUND_PROPOSALS = 5
+MAX_DISPUTE_DRAFTS = 3
 TOOL_TIMEOUT = 20.0
 RESULT_CHARS = 6000
 TOOLKIT_TOOLS = ("get_order_details", "list_disputes")
@@ -56,8 +61,12 @@ for disputes.
 - To review payments or protect the seller: list the flagged pending payments, call \
 get_payment_risk for the high-risk ones, and call prepare_refund for EACH pending high-risk \
 payment before answering. Medium risk means monitor, not refund.
-- You cannot move money. prepare_refund only shows the seller a button they must confirm. \
-Never say a refund is prepared unless prepare_refund returned "proposed".
+- To help with a dispute: call list_disputes, then get_dispute_case for the open one(s), then \
+draft_dispute_reply. Tell the seller what the buyer claims, the deadline, and which evidence is \
+missing. The draft is only shown to the seller: they edit it and send it themselves.
+- You cannot move money or send anything. prepare_refund only shows the seller a button they \
+must confirm. Never say a refund is prepared unless prepare_refund returned "proposed", and \
+never say a dispute response was sent.
 - Every number you write (amounts, scores, ratios, counts) must be copied exactly from the tool \
 results. Do not round, add up or compute.
 - Never mention countries, nationalities or names; say "cross-border" or "domestic".
@@ -94,6 +103,14 @@ TOOLS = {
         {"dispute_state": {"type": "string", "enum": [
             "REQUIRED_ACTION", "REQUIRED_OTHER_PARTY_ACTION", "UNDER_PAYPAL_REVIEW",
             "RESOLVED", "OPEN_INQUIRIES", "APPEALABLE"]}}, []),
+    "get_dispute_case": _function(
+        "get_dispute_case", "One PayPal dispute: what the buyer claims, stage, status, deadline, "
+        "the disputed payment and an evidence checklist (what PayGuard has, what is missing).",
+        {"dispute_id": {"type": "string"}}, ["dispute_id"]),
+    "draft_dispute_reply": _function(
+        "draft_dispute_reply", "Write a draft response to a dispute for the seller to review. "
+        "This does NOT send anything: the seller edits and sends it.",
+        {"dispute_id": {"type": "string"}}, ["dispute_id"]),
     "prepare_refund": _function(
         "prepare_refund", "Propose refunding a payment. This does NOT refund: the seller sees "
         "a button and must confirm.",
@@ -129,6 +146,7 @@ class CopilotAnswer:
     source: str                       # "llm" (numbers verified) or "template"
     steps: list[Step] = field(default_factory=list)
     proposals: list[RefundProposal] = field(default_factory=list)
+    drafts: list[disputes.Draft] = field(default_factory=list)
     stopped: str = ""                 # why the loop ended early, if it did
 
 
@@ -199,8 +217,9 @@ class Copilot:
         self.agent = agent
         self.toolkit = toolkit
         self.chat = chat or groq_chat
+        # Without the toolkit, list_disputes falls back to PayGuard's own PayPal client.
         self.tools = [spec for name, spec in TOOLS.items()
-                      if toolkit is not None or name not in TOOLKIT_TOOLS]
+                      if toolkit is not None or name != "get_order_details"]
 
     @property
     def uses_toolkit(self) -> bool:
@@ -261,7 +280,7 @@ class Copilot:
 
     def _run_tool(self, name: str, raw_args, alerts: dict[str, Alert],
                   out: CopilotAnswer) -> tuple[dict, bool]:
-        if name not in TOOLS or (name in TOOLKIT_TOOLS and self.toolkit is None):
+        if name not in TOOLS or (name == "get_order_details" and self.toolkit is None):
             result, ok = {"error": f"unknown tool {name!r}"}, False
             out.steps.append(Step(name, {}, result, ok))
             return result, ok
@@ -280,7 +299,8 @@ class Copilot:
             result, ok = {"error": "unexpected arguments"}, False
         except Exception as e:  # a failing tool is reported to the model, never raised
             result, ok = {"error": f"{type(e).__name__}: {str(e)[:200]}"}, False
-        out.steps.append(Step(name, args, result, ok, via_toolkit=name in TOOLKIT_TOOLS))
+        out.steps.append(Step(name, args, result, ok,
+                              via_toolkit=name in TOOLKIT_TOOLS and self.toolkit is not None))
         return result, ok
 
     def _tool_list_payments(self, alerts, out, which: str = "all", limit: int = 10) -> dict:
@@ -308,8 +328,47 @@ class Copilot:
         return _compact_order(self._toolkit("get_order_details", {"order_id": order_id}))
 
     def _tool_list_disputes(self, alerts, out, dispute_state: str | None = None) -> dict:
+        if self.toolkit is None:
+            return _compact_disputes({"items": self._paypal().list_disputes()})
         params = {"dispute_state": dispute_state} if dispute_state else {}
         return _compact_disputes(self._toolkit("list_disputes", params))
+
+    def _tool_get_dispute_case(self, alerts, out, dispute_id: str) -> dict:
+        case = self._case(dispute_id)
+        p = case.payment
+        return {"dispute_id": case.dispute_id, "claim": case.reason_text,
+                "stage": case.stage.lower(), "status": case.status_text,
+                "amount": case.amount, "currency": case.currency,
+                "opened": case.created[:10], "respond_by": (case.due or "")[:10] or None,
+                "days_left": case.days_left(),
+                "can_answer_now": disputes.ACTION_LABELS.get(case.respond_action, "no"),
+                "payment": {"amount": p["amount"], "item": item_of(p.get("raw")),
+                            "paid": p["created_at"][:10], "order_id": p["order_id"]} if p else None,
+                "buyer_messages": [m["content"][:300] for m in case.messages
+                                   if m["posted_by"] == "BUYER"][-3:],
+                "evidence": [{"item": i.label, "have": i.have, "detail": i.detail,
+                              "requested_by_paypal": i.requested}
+                             for i in disputes.checklist(case)]}
+
+    def _tool_draft_dispute_reply(self, alerts, out, dispute_id: str) -> dict:
+        if any(d.dispute_id == dispute_id for d in out.drafts):
+            return {"status": "already drafted", "dispute_id": dispute_id}
+        if len(out.drafts) >= MAX_DISPUTE_DRAFTS:
+            return {"error": f"at most {MAX_DISPUTE_DRAFTS} drafts at once"}
+        draft = disputes.draft_response(self._case(dispute_id), use_llm=self.agent.use_llm)
+        out.drafts.append(draft)
+        return {"status": "draft ready for the seller to review, edit and send; nothing was "
+                          "sent to PayPal", "dispute_id": dispute_id,
+                "summary": draft.summary, "draft": draft.reply,
+                "placeholders_to_fill": disputes.PLACEHOLDER.findall(draft.reply)}
+
+    def _case(self, dispute_id: str) -> disputes.DisputeCase:
+        return disputes.parse_case(self._paypal().get_dispute(dispute_id), self.agent.ledger)
+
+    def _paypal(self):
+        if self.agent.paypal is None:
+            raise RuntimeError("PayPal client not configured")
+        return self.agent.paypal
 
     def _tool_prepare_refund(self, alerts, out, capture_id: str, reason: str = "") -> dict:
         a = alerts.get(capture_id)
@@ -347,6 +406,12 @@ _CLAIMS_REFUND = re.compile(r"\b(prepared|proposed|queued|set up)\b[^.]*\brefund
                             r"\brefund[^.]*\b(prepared|proposed|queued|ready)\b", re.I)
 
 
+_CLAIMS_SENT = re.compile(
+    r"\b(I|we|PayGuard)\s+(have\s+|has\s+|already\s+)?(sent|submitted|posted)\b|"
+    r"\b(response|reply|evidence|draft|answer)\s+(has|have)?\s*(been|was|were)\s+"
+    r"(sent|submitted|posted)\b", re.I)
+
+
 def ungrounded(text: str, allowed: set[float], out: CopilotAnswer) -> str:
     """Why an answer cannot be shown as is ("" if it is grounded in the tool results)."""
     bad = sorted(numbers_in(text) - allowed)
@@ -355,6 +420,9 @@ def ungrounded(text: str, allowed: set[float], out: CopilotAnswer) -> str:
                 "Use only numbers copied from the tool results.")
     if names_country(text):
         return "Do not name countries or nationalities; say cross-border or domestic."
+    if _CLAIMS_SENT.search(text):
+        return ("You cannot send anything to PayPal; the seller sends the dispute response. "
+                "Do not say it was sent.")
     if _CLAIMS_REFUND.search(text) and not out.proposals:
         return ("You say a refund is prepared, but prepare_refund was never called. Do not claim "
                 "it; say which payments you recommend refunding instead.")
@@ -424,6 +492,9 @@ def template_answer(out: CopilotAnswer) -> str:
         total = sum(p.amount for p in out.proposals)
         lines.append(f"I prepared {len(out.proposals)} refund(s) for ${total:,.2f}; nothing is "
                      "refunded until you confirm.")
+    for d in out.drafts:
+        lines.append(f"I drafted a response to dispute {d.dispute_id}: {d.summary} Review and "
+                     "edit it in the Disputes panel; nothing is sent until you confirm.")
     if not lines:
         listed = next((s.result for s in out.steps if s.tool == "list_payments" and s.ok), None)
         if listed:

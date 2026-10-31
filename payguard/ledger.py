@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS refunds (
     amount      REAL NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dispute_responses (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    dispute_id  TEXT NOT NULL,
+    sent_at     TEXT NOT NULL,
+    action      TEXT NOT NULL,      -- send-message | provide-evidence
+    text        TEXT NOT NULL,      -- exactly what the seller approved and PayPal received
+    drafted_by  TEXT                -- llm | template | seller (written from scratch)
+);
 CREATE TABLE IF NOT EXISTS paypal_webhook_events (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL,
@@ -165,14 +173,31 @@ class Ledger:
             (value, value, capture_id),
         )
 
+    def record_dispute_response(self, dispute_id: str, action: str, text: str,
+                                drafted_by: str | None) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO dispute_responses (dispute_id, sent_at, action, text, drafted_by)"
+                " VALUES (?,?,?,?,?)",
+                (dispute_id, datetime.now(timezone.utc).isoformat(timespec="seconds"), action,
+                 text, drafted_by))
+
+    def dispute_responses(self, dispute_id: str | None = None) -> list[dict]:
+        q, args = "SELECT * FROM dispute_responses", ()
+        if dispute_id:
+            q, args = q + " WHERE dispute_id = ?", (dispute_id,)
+        return [dict(r) for r in self.conn.execute(q + " ORDER BY id", args).fetchall()]
+
     def reset(self) -> None:
-        """Forget every payment, refund and decision (demo reset). PayPal is not touched.
+        """Forget every payment, refund, decision and dispute response log (demo reset).
+        PayPal is not touched.
 
         Processed webhook ids are kept, so a late redelivery of an old event
         does not bring a deleted payment back.
         """
         with self.conn:
             self.conn.execute("DELETE FROM decisions")
+            self.conn.execute("DELETE FROM dispute_responses")
             self.conn.execute("DELETE FROM refunds")
             self.conn.execute("DELETE FROM payments")
 
